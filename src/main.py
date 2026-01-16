@@ -1,6 +1,7 @@
 import time
 import os
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from logger import setup_logger
 from gmail_auth import get_gmail_service
@@ -10,14 +11,23 @@ from supabase_client import SupabaseClient
 from threading import Thread
 from flask import Flask
 
+
 load_dotenv()
+
 
 # Create Flask app for health check (required by Render)
 app = Flask(__name__)
 
+
 @app.route('/')
 def health_check():
-    return "✅ Expense Monitor is running!", 200
+    return "Expense Monitor is running", 200
+
+
+@app.route('/health')
+def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}, 200
+
 
 def run_flask():
     """Run Flask server in background thread"""
@@ -36,9 +46,9 @@ class ExpenseMonitor:
         self.extractor = None
         self.supabase = None
         
-        print("="*70)
-        print("💰 EXPENSE MANAGEMENT SYSTEM - STARTING UP")
-        print("="*70)
+        self.logger.info("="*70)
+        self.logger.info("EXPENSE MANAGEMENT SYSTEM - STARTING UP")
+        self.logger.info("="*70)
         
         # Initialize all components
         self._initialize()
@@ -47,26 +57,26 @@ class ExpenseMonitor:
         """Initialize all components"""
         try:
             # 1. Authenticate Gmail
-            print("\n🔐 Authenticating Gmail...")
+            self.logger.info("Authenticating Gmail...")
             self.gmail_service = get_gmail_service()
             
             # 2. Initialize Gmail Monitor
-            print("📧 Initializing Gmail Monitor...")
+            self.logger.info("Initializing Gmail Monitor...")
             self.monitor = GmailMonitor(self.gmail_service)
             
             # 3. Initialize AI Extractor
-            print("🤖 Initializing AI Extractor...")
+            self.logger.info("Initializing AI Extractor...")
             self.extractor = TransactionExtractor()
             
             # 4. Connect to Supabase
-            print("💾 Connecting to Database...")
+            self.logger.info("Connecting to Database...")
             self.supabase = SupabaseClient()
             
-            print("\n✅ ALL SYSTEMS READY!")
-            print(f"⏰ Will check for new transactions every {self.check_interval // 60} minutes")
+            self.logger.info("ALL SYSTEMS READY")
+            self.logger.info(f"Will check for new transactions every {self.check_interval // 60} minutes")
             
         except Exception as e:
-            print(f"\n❌ INITIALIZATION FAILED: {str(e)}")
+            self.logger.error(f"INITIALIZATION FAILED: {str(e)}")
             raise
     
     def process_cycle(self):
@@ -74,46 +84,46 @@ class ExpenseMonitor:
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            print("\n" + "="*70)
-            print(f"🔄 STARTING MONITORING CYCLE - {current_time}")
-            print("="*70)
+            self.logger.info("="*70)
+            self.logger.info(f"STARTING MONITORING CYCLE - {current_time}")
+            self.logger.info("="*70)
             
             # Step 1: Fetch new emails (last 24 hours)
             emails = self.monitor.fetch_new_transactions(days_back=1)
             
             if not emails:
-                print("\n📭 No new transaction emails found")
+                self.logger.info("No new transaction emails found")
                 return
             
             # Step 2: Extract transaction data
             transactions = self.extractor.extract_batch(emails)
             
             if not transactions:
-                print("\n⚠️  No transactions could be extracted")
+                self.logger.warning("No transactions could be extracted")
                 return
             
             # Step 3: Save to database
             results = self.supabase.save_batch(transactions)
             
             # Step 4: Summary
-            print("\n" + "="*70)
-            print("📊 CYCLE COMPLETE")
-            print(f"   Emails Found: {len(emails)}")
-            print(f"   Extracted: {len(transactions)}")
-            print(f"   Saved: {results['saved']}")
-            print(f"   Duplicates: {results['duplicates']}")
-            print(f"   Failed: {results['failed']}")
-            print("="*70)
+            self.logger.info("="*70)
+            self.logger.info("CYCLE COMPLETE")
+            self.logger.info(f"Emails Found: {len(emails)}")
+            self.logger.info(f"Extracted: {len(transactions)}")
+            self.logger.info(f"Saved: {results['saved']}")
+            self.logger.info(f"Duplicates: {results['duplicates']}")
+            self.logger.info(f"Failed: {results['failed']}")
+            self.logger.info("="*70)
             
         except Exception as e:
-            print(f"\n❌ ERROR IN CYCLE: {str(e)}")
+            self.logger.error(f"ERROR IN CYCLE: {str(e)}", exc_info=True)
     
     def run(self):
         """Run continuous monitoring loop"""
-        print("\n" + "="*70)
-        print("🚀 STARTING CONTINUOUS MONITORING")
-        print("   Press Ctrl+C to stop")
-        print("="*70)
+        self.logger.info("="*70)
+        self.logger.info("STARTING CONTINUOUS MONITORING")
+        self.logger.info("Press Ctrl+C to stop")
+        self.logger.info("="*70)
         
         cycle_count = 0
         
@@ -124,28 +134,23 @@ class ExpenseMonitor:
                 # Run monitoring cycle
                 self.process_cycle()
                 
-                # Wait before next check
-                next_check = datetime.now()
-                next_check = next_check.replace(second=0, microsecond=0)
-                next_check_str = (
-                    datetime.now().replace(second=0, microsecond=0)
-                    .replace(minute=datetime.now().minute + (self.check_interval // 60))
-                    .strftime("%H:%M:%S")
-                )
+                # Calculate next check time using timedelta to handle minute overflow
+                next_check_time = datetime.now() + timedelta(seconds=self.check_interval)
+                next_check_str = next_check_time.strftime("%Y-%m-%d %H:%M:%S")
                 
-                print(f"\n⏸️  Sleeping for {self.check_interval // 60} minutes...")
-                print(f"   Next check at approximately: {next_check_str}")
-                print(f"   Total cycles completed: {cycle_count}")
+                self.logger.info(f"Sleeping for {self.check_interval // 60} minutes...")
+                self.logger.info(f"Next check at approximately: {next_check_str}")
+                self.logger.info(f"Total cycles completed: {cycle_count}")
                 
                 time.sleep(self.check_interval)
                 
         except KeyboardInterrupt:
-            print("\n\n" + "="*70)
-            print("🛑 MONITORING STOPPED BY USER")
-            print(f"   Total cycles completed: {cycle_count}")
-            print("="*70)
+            self.logger.info("="*70)
+            self.logger.info("MONITORING STOPPED BY USER")
+            self.logger.info(f"Total cycles completed: {cycle_count}")
+            self.logger.info("="*70)
         except Exception as e:
-            print(f"\n\n❌ FATAL ERROR: {str(e)}")
+            self.logger.critical(f"FATAL ERROR: {str(e)}", exc_info=True)
             raise
 
 
@@ -155,11 +160,16 @@ if __name__ == "__main__":
         # Start Flask health check server in background thread
         flask_thread = Thread(target=run_flask, daemon=True)
         flask_thread.start()
-        print("🌐 Health check endpoint started on port", os.getenv('PORT', 10000))
+        
+        # Get logger to log Flask startup
+        logger = logging.getLogger(__name__)
+        logger.info(f"Health check endpoint started on port {os.getenv('PORT', 10000)}")
         
         # Start main monitoring
         monitor = ExpenseMonitor()
         monitor.run()
+        
     except Exception as e:
-        print(f"\n❌ Failed to start: {str(e)}")
+        logger = logging.getLogger(__name__)
+        logger.critical(f"Failed to start: {str(e)}", exc_info=True)
         exit(1)
