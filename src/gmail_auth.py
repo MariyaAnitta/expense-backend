@@ -1,68 +1,73 @@
 import os
 import pickle
-from google.auth.transport.requests import Request
+import base64
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from dotenv import load_dotenv
+from google.auth.transport.requests import Request
 
-load_dotenv()
-
-# Gmail API scope - read-only access to emails
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
-class GmailAuthenticator:
-    """Handles Gmail API authentication using OAuth 2.0"""
+def get_gmail_service():
+    """Authenticate and return Gmail API service"""
+    from googleapiclient.discovery import build
     
-    def __init__(self):
-        self.creds = None
-        self.credentials_file = 'credentials/credentials.json'
-        self.token_file = 'credentials/token.pickle'
-        
-    def authenticate(self):
-        """
-        Authenticate with Gmail API.
-        First time: Opens browser for user to authorize.
-        Subsequent times: Uses saved token.
-        
-        Returns:
-            Google API service object
-        """
-        # Check if we have saved credentials
-        if os.path.exists(self.token_file):
-            with open(self.token_file, 'rb') as token:
-                self.creds = pickle.load(token)
-        
-        # If credentials don't exist or are invalid, re-authenticate
-        if not self.creds or not self.creds.valid:
-            if self.creds and self.creds.expired and self.creds.refresh_token:
-                # Refresh expired token
-                print("Refreshing expired token...")
-                self.creds.refresh(Request())
-            else:
-                # First time authentication - opens browser
-                print("First time authentication - browser will open...")
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_file, SCOPES)
-                self.creds = flow.run_local_server(port=0)
-            
-            # Save credentials for next time
-            with open(self.token_file, 'wb') as token:
-                pickle.dump(self.creds, token)
-                print("Credentials saved successfully!")
-        
-        # Build and return Gmail service
-        service = build('gmail', 'v1', credentials=self.creds)
-        print("✅ Gmail API authentication successful!")
-        return service
-
-# Test function
-if __name__ == "__main__":
-    print("Testing Gmail Authentication...")
-    auth = GmailAuthenticator()
-    gmail_service = auth.authenticate()
+    creds = None
     
-    # Test: Get user's email address
-    profile = gmail_service.users().getProfile(userId='me').execute()
-    print(f"✅ Connected to: {profile['emailAddress']}")
-    print(f"Total messages: {profile['messagesTotal']}")
+    # Try to load token from base64 environment variable (for Render)
+    token_base64 = os.getenv('GMAIL_TOKEN_BASE64')
+    if token_base64:
+        try:
+            token_data = base64.b64decode(token_base64)
+            creds = pickle.loads(token_data)
+            print("✅ Loaded credentials from GMAIL_TOKEN_BASE64")
+        except Exception as e:
+            print(f"⚠️ Failed to load GMAIL_TOKEN_BASE64: {e}")
+    
+    # Fallback: Try to load from local token.pickle file
+    if not creds and os.path.exists('credentials/token.pickle'):
+        with open('credentials/token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+            print("✅ Loaded credentials from local token.pickle")
+    
+    # Refresh token if expired
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            print("✅ Token refreshed successfully")
+        except Exception as e:
+            print(f"⚠️ Token refresh failed: {e}")
+            creds = None
+    
+    # If no valid credentials, authenticate with OAuth
+    if not creds or not creds.valid:
+        client_id = os.getenv('GMAIL_CLIENT_ID')
+        client_secret = os.getenv('GMAIL_CLIENT_SECRET')
+        
+        if not client_id or not client_secret:
+            raise Exception("GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET environment variables must be set")
+        
+        print("First time authentication - browser will open...")
+        
+        # Create credentials dict
+        client_config = {
+            "installed": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost"]
+            }
+        }
+        
+        flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+        creds = flow.run_local_server(port=0)
+        
+        # Save credentials locally
+        os.makedirs('credentials', exist_ok=True)
+        with open('credentials/token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+        
+        print("✅ Authentication successful! Token saved locally.")
+        print("⚠️ IMPORTANT: Convert token.pickle to base64 and add to GMAIL_TOKEN_BASE64 for production")
+    
+    return build('gmail', 'v1', credentials=creds)
