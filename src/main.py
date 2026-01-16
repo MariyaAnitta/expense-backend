@@ -3,18 +3,33 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 from logger import setup_logger
-from gmail_auth import GmailAuthenticator
+from gmail_auth import get_gmail_service
 from gmail_monitor import GmailMonitor
 from gemini_extractor import TransactionExtractor
 from supabase_client import SupabaseClient
+from threading import Thread
+from flask import Flask
 
 load_dotenv()
+
+# Create Flask app for health check (required by Render)
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "✅ Expense Monitor is running!", 200
+
+def run_flask():
+    """Run Flask server in background thread"""
+    port = int(os.getenv('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
 
 class ExpenseMonitor:
     """Main orchestrator for 24/7 expense monitoring"""
     
     def __init__(self):
-        self.logger = setup_logger()  # Add this line
+        self.logger = setup_logger()
         self.check_interval = int(os.getenv('CHECK_INTERVAL_MINUTES', 10)) * 60
         self.gmail_service = None
         self.monitor = None
@@ -33,8 +48,7 @@ class ExpenseMonitor:
         try:
             # 1. Authenticate Gmail
             print("\n🔐 Authenticating Gmail...")
-            auth = GmailAuthenticator()
-            self.gmail_service = auth.authenticate()
+            self.gmail_service = get_gmail_service()
             
             # 2. Initialize Gmail Monitor
             print("📧 Initializing Gmail Monitor...")
@@ -138,6 +152,12 @@ class ExpenseMonitor:
 # Entry point
 if __name__ == "__main__":
     try:
+        # Start Flask health check server in background thread
+        flask_thread = Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        print("🌐 Health check endpoint started on port", os.getenv('PORT', 10000))
+        
+        # Start main monitoring
         monitor = ExpenseMonitor()
         monitor.run()
     except Exception as e:
