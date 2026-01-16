@@ -3,7 +3,8 @@ services:
     name: expense-monitor
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python src/main.py
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT --timeout 0 src.main:app & python src/main.py
+
     envVars:
       - key: GMAIL_CLIENT_ID
         sync: false
