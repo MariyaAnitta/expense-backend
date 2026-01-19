@@ -7,27 +7,22 @@ from logger import setup_logger
 from gmail_auth import get_gmail_service
 from gmail_monitor import GmailMonitor
 from gemini_extractor import TransactionExtractor
-#from supabase_client import SupabaseClient
 from firebase_client import FirebaseClient
 from threading import Thread
-from flask import Flask
-from flask import Flask, request 
+from flask import Flask, request, jsonify
 
 load_dotenv()
 
-
 # Create Flask app for health check (required by Render)
 app = Flask(__name__)
-
 
 @app.route('/')
 def health_check():
     return "Expense Monitor is running", 200
 
-
 @app.route('/health')
 def health():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}, 200
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()}), 200
 
 @app.route('/api/reconciliations', methods=['POST'])
 def save_reconciliation():
@@ -37,10 +32,10 @@ def save_reconciliation():
         firebase_client = FirebaseClient()
         doc_id = firebase_client.save_reconciliation_report(data)
         if doc_id:
-            return {"success": True, "id": doc_id}, 200
-        return {"success": False, "error": "Failed to save"}, 500
+            return jsonify({"success": True, "id": doc_id}), 200
+        return jsonify({"success": False, "error": "Failed to save"}), 500
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/reconciliations', methods=['GET'])
 def get_reconciliations():
@@ -49,17 +44,14 @@ def get_reconciliations():
         year = request.args.get('year', type=int)
         firebase_client = FirebaseClient()
         reports = firebase_client.get_reconciliation_reports(year)
-        return {"success": True, "reports": reports}, 200
+        return jsonify({"success": True, "reports": reports}), 200
     except Exception as e:
-        return {"success": False, "error": str(e)}, 500
-
-
+        return jsonify({"success": False, "error": str(e)}), 500
 
 def run_flask():
     """Run Flask server in background thread"""
     port = int(os.getenv('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
 
 class ExpenseMonitor:
     """Main orchestrator for 24/7 expense monitoring"""
@@ -70,7 +62,7 @@ class ExpenseMonitor:
         self.gmail_service = None
         self.monitor = None
         self.extractor = None
-        self.supabase = None
+        self.firebase = None
         
         self.logger.info("="*70)
         self.logger.info("EXPENSE MANAGEMENT SYSTEM - STARTING UP")
@@ -94,11 +86,9 @@ class ExpenseMonitor:
             self.logger.info("Initializing AI Extractor...")
             self.extractor = TransactionExtractor()
             
-            # 4. Connect to Supabase
+            # 4. Connect to Firebase
             self.logger.info("Connecting to Database...")
-            #self.supabase = SupabaseClient()
             self.firebase = FirebaseClient()
-
             
             self.logger.info("ALL SYSTEMS READY")
             self.logger.info(f"Will check for new transactions every {self.check_interval // 60} minutes")
@@ -164,7 +154,7 @@ class ExpenseMonitor:
                 # Run monitoring cycle
                 self.process_cycle()
                 
-                # Calculate next check time using timedelta to handle minute overflow
+                # Calculate next check time
                 next_check_time = datetime.now() + timedelta(seconds=self.check_interval)
                 next_check_str = next_check_time.strftime("%Y-%m-%d %H:%M:%S")
                 
@@ -183,13 +173,15 @@ class ExpenseMonitor:
             self.logger.critical(f"FATAL ERROR: {str(e)}", exc_info=True)
             raise
 
-
 # Entry point
 if __name__ == "__main__":
     try:
         # Start Flask health check server in background thread
         flask_thread = Thread(target=run_flask, daemon=True)
         flask_thread.start()
+        
+        # Give Flask time to start
+        time.sleep(2)
         
         # Get logger to log Flask startup
         logger = logging.getLogger(__name__)
