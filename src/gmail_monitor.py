@@ -8,30 +8,45 @@ class GmailMonitor:
     
     def __init__(self, gmail_service):
         self.service = gmail_service
-        
-    def search_transaction_emails(self, days_back=1):
+    
+    def search_transaction_emails(self, after_timestamp=None):
         """
         Search for credit card transaction emails
-        
         Args:
-            days_back: How many days back to search (default: 1 day)
-            
+            after_timestamp: Only get emails after this timestamp (Firebase timestamp or None)
         Returns:
             List of message IDs matching the criteria
         """
         try:
             # Build search query
-            # Look for emails from banks with transaction keywords
             query_parts = [
-    # Search by subject only (ignore sender for testing)
-    'subject:(Credit transaction alert for Axis Bank)',
-    # Only recent emails
-    f'newer_than:{days_back}d'
-]
+                'subject:(Credit transaction alert)',  # Generic - matches all banks
+            ]
+            
+            # If we have a last processed timestamp, only fetch emails after that
+            if after_timestamp:
+                try:
+                    # Convert Firebase timestamp to datetime
+                    if hasattr(after_timestamp, 'timestamp'):
+                        dt = datetime.fromtimestamp(after_timestamp.timestamp())
+                    else:
+                        # Fallback if timestamp format is different
+                        dt = datetime.now() - timedelta(days=1)
+                    
+                    # Format for Gmail: YYYY/MM/DD
+                    date_str = dt.strftime('%Y/%m/%d')
+                    query_parts.append(f'after:{date_str}')
+                    print(f"Searching emails after: {date_str}")
+                except Exception as e:
+                    print(f"Error parsing timestamp, using fallback: {e}")
+                    query_parts.append('newer_than:1d')
+            else:
+                # First run: get last 7 days
+                query_parts.append('newer_than:7d')
+                print("First run: searching last 7 days")
             
             query = ' '.join(query_parts)
-            
-            print(f"🔍 Searching Gmail with query: {query}")
+            print(f"Searching Gmail with query: {query}")
             
             # Execute search
             results = self.service.users().messages().list(
@@ -43,23 +58,21 @@ class GmailMonitor:
             messages = results.get('messages', [])
             
             if not messages:
-                print("📭 No transaction emails found")
+                print("No transaction emails found")
                 return []
             
-            print(f"📧 Found {len(messages)} transaction emails")
+            print(f"Found {len(messages)} transaction emails")
             return messages
             
         except Exception as e:
-            print(f"❌ Error searching emails: {str(e)}")
+            print(f"Error searching emails: {str(e)}")
             return []
     
     def get_email_content(self, message_id):
         """
         Get full content of an email
-        
         Args:
             message_id: Gmail message ID
-            
         Returns:
             Dictionary with email details
         """
@@ -92,7 +105,7 @@ class GmailMonitor:
             return email_data
             
         except Exception as e:
-            print(f"❌ Error fetching email {message_id}: {str(e)}")
+            print(f"Error fetching email {message_id}: {str(e)}")
             return None
     
     def _extract_body(self, payload):
@@ -106,16 +119,22 @@ class GmailMonitor:
             for part in payload['parts']:
                 if part['mimeType'] == 'text/plain':
                     if 'data' in part['body']:
-                        body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+                        body = base64.urlsafe_b64decode(
+                            part['body']['data']
+                        ).decode('utf-8')
                         break
                 elif part['mimeType'] == 'text/html':
                     if 'data' in part['body']:
                         # Use HTML if no plain text
-                        body = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+                        body = base64.urlsafe_b64decode(
+                            part['body']['data']
+                        ).decode('utf-8')
         else:
             # Simple email
             if 'data' in payload['body']:
-                body = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8')
+                body = base64.urlsafe_b64decode(
+                    payload['body']['data']
+                ).decode('utf-8')
         
         # Clean HTML tags if present
         body = re.sub(r'<[^>]+>', ' ', body)
@@ -123,19 +142,20 @@ class GmailMonitor:
         
         return body
     
-    def fetch_new_transactions(self, days_back=1):
+    def fetch_new_transactions(self, after_timestamp=None):
         """
         Main method: Search and fetch all transaction emails
-        
+        Args:
+            after_timestamp: Only fetch emails after this time (Firebase timestamp)
         Returns:
             List of email data dictionaries
         """
-        print("\n" + "="*60)
-        print("🚀 Starting Gmail Transaction Monitor")
-        print("="*60)
+        print("\n" + "=" * 60)
+        print("Starting Gmail Transaction Monitor")
+        print("=" * 60)
         
         # Search for emails
-        message_ids = self.search_transaction_emails(days_back)
+        message_ids = self.search_transaction_emails(after_timestamp)
         
         if not message_ids:
             return []
@@ -143,44 +163,43 @@ class GmailMonitor:
         # Fetch content for each email
         emails = []
         for i, msg in enumerate(message_ids, 1):
-            print(f"\n📩 Fetching email {i}/{len(message_ids)}...")
+            print(f"\nFetching email {i}/{len(message_ids)}...")
             email_data = self.get_email_content(msg['id'])
             
             if email_data:
                 emails.append(email_data)
-                print(f"✅ Subject: {email_data['subject'][:60]}...")
-                print(f"   From: {email_data['sender'][:50]}")
+                print(f"Subject: {email_data['subject'][:60]}...")
+                print(f"From: {email_data['sender'][:50]}")
         
-        print("\n" + "="*60)
-        print(f"✅ Successfully fetched {len(emails)} transaction emails")
-        print("="*60 + "\n")
+        print("\n" + "=" * 60)
+        print(f"Successfully fetched {len(emails)} transaction emails")
+        print("=" * 60 + "\n")
         
         return emails
 
 
 # Test function
 if __name__ == "__main__":
-    from gmail_auth import GmailAuthenticator
+    from gmail_auth import get_gmail_service
     
     print("Testing Gmail Monitor...")
     
     # Authenticate
-    auth = GmailAuthenticator()
-    gmail_service = auth.authenticate()
+    gmail_service = get_gmail_service()
     
     # Create monitor
     monitor = GmailMonitor(gmail_service)
     
     # Fetch transactions from last 7 days
-    emails = monitor.fetch_new_transactions(days_back=7)
+    emails = monitor.fetch_new_transactions()
     
     # Display results
     if emails:
-        print("\n📊 TRANSACTION EMAILS FOUND:\n")
+        print("\nTRANSACTION EMAILS FOUND:\n")
         for i, email in enumerate(emails, 1):
             print(f"\n{i}. {email['subject']}")
             print(f"   From: {email['sender']}")
             print(f"   Preview: {email['snippet'][:100]}...")
             print(f"   Body (first 200 chars): {email['body'][:200]}...")
     else:
-        print("\n❌ No transaction emails found in the last 7 days")
+        print("\nNo transaction emails found in the last 7 days")
