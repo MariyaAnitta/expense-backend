@@ -7,7 +7,8 @@ from logger import setup_logger
 from gmail_auth import get_gmail_service
 from gmail_monitor import GmailMonitor
 from gemini_extractor import TransactionExtractor
-from supabase_client import SupabaseClient
+#from supabase_client import SupabaseClient
+from firebase_client import FirebaseClient
 from threading import Thread
 from flask import Flask
 
@@ -70,7 +71,9 @@ class ExpenseMonitor:
             
             # 4. Connect to Supabase
             self.logger.info("Connecting to Database...")
-            self.supabase = SupabaseClient()
+            #self.supabase = SupabaseClient()
+            self.firebase = FirebaseClient()
+
             
             self.logger.info("ALL SYSTEMS READY")
             self.logger.info(f"Will check for new transactions every {self.check_interval // 60} minutes")
@@ -103,8 +106,9 @@ class ExpenseMonitor:
                 return
             
             # Step 3: Save to database
-            results = self.supabase.save_batch(transactions)
-            
+            #results = self.supabase.save_batch(transactions)
+            results = self.firebase.save_batch(transactions)
+
             # Step 4: Summary
             self.logger.info("="*70)
             self.logger.info("CYCLE COMPLETE")
