@@ -11,7 +11,7 @@ from gemini_extractor import TransactionExtractor
 from firebase_client import FirebaseClient
 from threading import Thread
 from flask import Flask
-
+from flask import Flask, request 
 
 load_dotenv()
 
@@ -28,6 +28,31 @@ def health_check():
 @app.route('/health')
 def health():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}, 200
+
+@app.route('/api/reconciliations', methods=['POST'])
+def save_reconciliation():
+    """Save reconciliation report"""
+    try:
+        data = request.get_json()
+        firebase_client = FirebaseClient()
+        doc_id = firebase_client.save_reconciliation_report(data)
+        if doc_id:
+            return {"success": True, "id": doc_id}, 200
+        return {"success": False, "error": "Failed to save"}, 500
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
+@app.route('/api/reconciliations', methods=['GET'])
+def get_reconciliations():
+    """Get saved reconciliation reports"""
+    try:
+        year = request.args.get('year', type=int)
+        firebase_client = FirebaseClient()
+        reports = firebase_client.get_reconciliation_reports(year)
+        return {"success": True, "reports": reports}, 200
+    except Exception as e:
+        return {"success": False, "error": str(e)}, 500
+
 
 
 def run_flask():
@@ -86,13 +111,15 @@ class ExpenseMonitor:
         """Run one complete monitoring cycle"""
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
             self.logger.info("="*70)
             self.logger.info(f"STARTING MONITORING CYCLE - {current_time}")
             self.logger.info("="*70)
             
-            # Step 1: Fetch new emails (last 24 hours)
-            emails = self.monitor.fetch_new_transactions(days_back=1)
+            # Get last processed timestamp to avoid re-fetching old emails
+            last_timestamp = self.firebase.get_last_processed_timestamp()
+            
+            # Step 1: Fetch new emails (only after last processed time)
+            emails = self.monitor.fetch_new_transactions(after_timestamp=last_timestamp)
             
             if not emails:
                 self.logger.info("No new transaction emails found")
@@ -106,9 +133,8 @@ class ExpenseMonitor:
                 return
             
             # Step 3: Save to database
-            #results = self.supabase.save_batch(transactions)
             results = self.firebase.save_batch(transactions)
-
+            
             # Step 4: Summary
             self.logger.info("="*70)
             self.logger.info("CYCLE COMPLETE")

@@ -10,7 +10,7 @@ class FirebaseClient:
     """Handles all Firebase Firestore operations"""
     
     def __init__(self):
-    # Initialize Firebase Admin SDK
+        # Initialize Firebase Admin SDK
         if not firebase_admin._apps:
             cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'credentials/firebase-credentials.json')
             
@@ -132,13 +132,71 @@ class FirebaseClient:
                     results['duplicates'] += 1
                 else:
                     results['failed'] += 1
-        
+    
         # Summary
-        print("="*60)
+        print("=" * 60)
         print("SAVE SUMMARY:")
         print(f"  Saved: {results['saved']}")
         print(f"  Duplicates: {results['duplicates']}")
         print(f"  Failed: {results['failed']}")
-        print("="*60)
+        print("=" * 60)
         
         return results
+
+    def save_reconciliation_report(self, report_data):
+        """Save monthly reconciliation report"""
+        try:
+            doc_ref = self.db.collection('reconciliations').add({
+                'month': report_data.get('month'),
+                'year': report_data.get('year'),
+                'matched_transactions': report_data.get('matched_transactions', []),
+                'unmatched_transactions': report_data.get('unmatched_transactions', []),
+                'summary': report_data.get('summary', {}),
+                'created_at': firestore.SERVER_TIMESTAMP
+            })
+            print(f"Saved reconciliation: {report_data.get('month')} {report_data.get('year')}")
+            return doc_ref[1].id
+        except Exception as e:
+            print(f"Error saving reconciliation: {e}")
+            return None
+
+    def get_reconciliation_reports(self, year=None):
+        """Get saved reconciliation reports"""
+        try:
+            query = self.db.collection('reconciliations')
+            if year:
+                query = query.where('year', '==', year)
+
+            query = query.order_by(
+                'created_at',
+                direction=firestore.Query.DESCENDING
+            )
+            
+            docs = query.stream()
+            reports = []
+
+            for doc in docs:
+                data = doc.to_dict()
+                data['id'] = doc.id
+                reports.append(data)
+
+            return reports
+        except Exception as e:
+            print(f"Error fetching reconciliations: {e}")
+            return []
+
+    def get_last_processed_timestamp(self):
+        """Get the timestamp of most recently processed email"""
+        try:
+            docs = self.db.collection('expenses') \
+                .order_by('created_at', direction=firestore.Query.DESCENDING) \
+                .limit(1) \
+                .stream()
+            
+            for doc in docs:
+                return doc.to_dict().get('created_at')
+
+            return None
+        except Exception as e:
+            print(f"Error getting last timestamp: {e}")
+            return None
