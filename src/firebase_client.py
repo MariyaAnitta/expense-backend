@@ -31,8 +31,7 @@ class FirebaseClient:
             firebase_admin.initialize_app(cred)
         
         self.db = firestore.client()
-        print("Connected to Firebase Firestore")
-
+        print("✅ Connected to Firebase Firestore")
     
     def transaction_exists(self, gmail_message_id):
         """
@@ -69,7 +68,7 @@ class FirebaseClient:
             
             # Check for duplicate
             if self.transaction_exists(gmail_message_id):
-                print(f"Transaction already exists (Message ID: {gmail_message_id[:20]}...)")
+                print(f"⚠️ Transaction already exists (Message ID: {gmail_message_id[:20]}...)")
                 return False
             
             # Prepare data for Firestore
@@ -96,12 +95,64 @@ class FirebaseClient:
             # Add document to Firestore
             self.db.collection('expenses').add(expense_data)
             
-            print(f"Saved: {expense_data['currency']} {expense_data['amount']} - {expense_data['merchant'][:40]}")
+            print(f"✅ Saved: {expense_data['currency']} {expense_data['amount']} - {expense_data['merchant'][:40]}")
             return True
             
         except Exception as e:
-            print(f"Error saving transaction: {str(e)}")
+            print(f"❌ Error saving transaction: {str(e)}")
             return False
+    
+    def save_telegram_receipt(self, expense_data, telegram_user_id=None):
+        """
+        Save Telegram receipt expense to Firestore
+        
+        Args:
+            expense_data: Dictionary with receipt details from Gemini extraction
+            telegram_user_id: Telegram user ID
+            
+        Returns:
+            Dictionary with success status and expense_id
+        """
+        try:
+            # Prepare data for Firestore
+            receipt_data = {
+                'merchant': expense_data.get('merchant_name', 'Unknown'),
+                'amount': float(expense_data.get('total_amount', 0)),
+                'currency': expense_data.get('currency', 'INR'),
+                'date': expense_data.get('date'),
+                'category': expense_data.get('category', 'Other'),
+                'source': 'telegram',
+                'items': expense_data.get('items', []),
+                'payment_method': expense_data.get('payment_method'),
+                'tax_amount': expense_data.get('tax_amount'),
+                'telegram_user_id': telegram_user_id,
+                'file_path': expense_data.get('file_path'),
+                'confidence': 0.90,
+                'created_at': firestore.SERVER_TIMESTAMP
+            }
+            
+            # Remove null values
+            receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
+            
+            # Add document to Firestore
+            #doc_ref = self.db.collection('expenses').add(receipt_data)
+            doc_ref = self.db.collection('telegram_receipts').add(receipt_data)
+
+            expense_id = doc_ref[1].id
+            
+            print(f"✅ Saved Telegram receipt: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")
+            
+            return {
+                'success': True,
+                'expense_id': expense_id
+            }
+            
+        except Exception as e:
+            print(f"❌ Error saving Telegram receipt: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
     
     def save_batch(self, transactions):
         """
@@ -119,7 +170,7 @@ class FirebaseClient:
             'failed': 0
         }
         
-        print(f"Saving {len(transactions)} transactions to Firebase...")
+        print(f"\n📦 Saving {len(transactions)} transactions to Firebase...")
         
         for i, transaction in enumerate(transactions, 1):
             print(f"[{i}/{len(transactions)}]", end=" ")
@@ -132,17 +183,17 @@ class FirebaseClient:
                     results['duplicates'] += 1
                 else:
                     results['failed'] += 1
-    
+        
         # Summary
         print("=" * 60)
-        print("SAVE SUMMARY:")
-        print(f"  Saved: {results['saved']}")
-        print(f"  Duplicates: {results['duplicates']}")
-        print(f"  Failed: {results['failed']}")
+        print("📊 SAVE SUMMARY:")
+        print(f"   ✅ Saved: {results['saved']}")
+        print(f"   ⚠️ Duplicates: {results['duplicates']}")
+        print(f"   ❌ Failed: {results['failed']}")
         print("=" * 60)
         
         return results
-
+    
     def save_reconciliation_report(self, report_data):
         """Save monthly reconciliation report"""
         try:
@@ -154,37 +205,41 @@ class FirebaseClient:
                 'summary': report_data.get('summary', {}),
                 'created_at': firestore.SERVER_TIMESTAMP
             })
-            print(f"Saved reconciliation: {report_data.get('month')} {report_data.get('year')}")
+            
+            print(f"✅ Saved reconciliation: {report_data.get('month')} {report_data.get('year')}")
             return doc_ref[1].id
+            
         except Exception as e:
-            print(f"Error saving reconciliation: {e}")
+            print(f"❌ Error saving reconciliation: {e}")
             return None
-
+    
     def get_reconciliation_reports(self, year=None):
         """Get saved reconciliation reports"""
         try:
             query = self.db.collection('reconciliations')
+            
             if year:
                 query = query.where('year', '==', year)
-
+            
             query = query.order_by(
                 'created_at',
                 direction=firestore.Query.DESCENDING
             )
             
             docs = query.stream()
+            
             reports = []
-
             for doc in docs:
                 data = doc.to_dict()
                 data['id'] = doc.id
                 reports.append(data)
-
+            
             return reports
+            
         except Exception as e:
-            print(f"Error fetching reconciliations: {e}")
+            print(f"❌ Error fetching reconciliations: {e}")
             return []
-
+    
     def get_last_processed_timestamp(self):
         """Get the timestamp of most recently processed email"""
         try:
@@ -195,8 +250,9 @@ class FirebaseClient:
             
             for doc in docs:
                 return doc.to_dict().get('created_at')
-
+            
             return None
+            
         except Exception as e:
-            print(f"Error getting last timestamp: {e}")
+            print(f"❌ Error getting last timestamp: {e}")
             return None
