@@ -7,7 +7,6 @@ from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 from flask import Flask, request, jsonify
 import asyncio
-from threading import Thread
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -176,17 +175,16 @@ def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run(application.process_update(update))
+        
+        # Process update in async context
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.process_update(update))
+        
         return jsonify({"ok": True}), 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-async def setup_webhook():
-    """Set up the webhook with Telegram"""
-    webhook_url = f"{WEBHOOK_URL}/webhook"
-    await application.bot.set_webhook(webhook_url)
-    logger.info(f"✅ Webhook set to: {webhook_url}")
 
 def init_bot():
     """Initialize the bot application"""
@@ -198,8 +196,13 @@ def init_bot():
     
     logger.info("🤖 Initializing Telegram bot with webhook...")
     
-    # Create application
+    # Create and initialize application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Initialize the application (IMPORTANT!)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
     
     # Add handlers
     application.add_handler(CommandHandler("start", start_command))
@@ -207,7 +210,9 @@ def init_bot():
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     # Setup webhook
-    asyncio.run(setup_webhook())
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    loop.run_until_complete(application.bot.set_webhook(webhook_url))
+    logger.info(f"✅ Webhook set to: {webhook_url}")
     
     logger.info("✅ Telegram bot initialized with webhook!")
 
