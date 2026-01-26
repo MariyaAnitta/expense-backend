@@ -5,16 +5,26 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
+from flask import Flask, request, jsonify
+import asyncio
+from threading import Thread
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WEBHOOK_URL = "https://xpenseflow-telegram-bot.onrender.com"
 
 # Initialize receipt extractor and Firebase client
 receipt_extractor = ReceiptExtractor()
 firebase_client = FirebaseClient()
+
+# Create Flask app for webhook
+app = Flask(__name__)
+
+# Initialize bot application
+application = None
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
@@ -85,7 +95,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
         
         if items:
-            items_text = "\n".join([f"  • {item}" for item in items[:5]])  # Show max 5 items
+            items_text = "\n".join([f"  • {item}" for item in items[:5]])
             confirmation_message += f"\n🛒 Items:\n{items_text}"
         
         await update.message.reply_text(confirmation_message, parse_mode='Markdown')
@@ -156,27 +166,56 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Error handling document: {e}")
         await update.message.reply_text("❌ Sorry, there was an error processing your document. Please try again.")
 
-def start_telegram_bot():
-    """Start the Telegram bot"""
+@app.route('/')
+def health_check():
+    """Health check endpoint for Render"""
+    return "ExpenseFlow Telegram Bot is running!", 200
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming Telegram updates via webhook"""
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        asyncio.run(application.process_update(update))
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+async def setup_webhook():
+    """Set up the webhook with Telegram"""
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    await application.bot.set_webhook(webhook_url)
+    logger.info(f"✅ Webhook set to: {webhook_url}")
+
+def init_bot():
+    """Initialize the bot application"""
+    global application
+    
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN not found in .env file!")
+        logger.error("❌ TELEGRAM_BOT_TOKEN not found!")
         return
     
-    logger.info("🤖 Starting ExpenseFlow Telegram bot...")
+    logger.info("🤖 Initializing Telegram bot with webhook...")
     
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Add command handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start_command))
-    
-    # Add message handlers
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    # Start polling
-    logger.info("✅ Telegram bot is running! Send receipts to process expenses.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Setup webhook
+    asyncio.run(setup_webhook())
+    
+    logger.info("✅ Telegram bot initialized with webhook!")
+
+def start_flask_server():
+    """Start Flask server for webhook"""
+    port = int(os.getenv('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == "__main__":
-    start_telegram_bot()
+    init_bot()
+    start_flask_server()
