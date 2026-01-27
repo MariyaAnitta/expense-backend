@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 from flask import Flask, request, jsonify
+import asyncio
+from threading import Thread
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +25,7 @@ app = Flask(__name__)
 
 # Initialize bot application
 application = None
+bot_loop = None
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
@@ -170,19 +173,35 @@ def health_check():
     return "ExpenseFlow Telegram Bot is running!", 200
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         
-        # Process update directly without queue
-        await application.process_update(update)
+        # Schedule update processing in the bot's event loop
+        asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            bot_loop
+        )
         
         return jsonify({"ok": True}), 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+async def run_bot_loop():
+    """Run the bot's event loop"""
+    # Keep the loop running forever
+    while True:
+        await asyncio.sleep(1)
+
+def start_bot_loop():
+    """Start bot event loop in background thread"""
+    global bot_loop
+    bot_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bot_loop)
+    bot_loop.run_until_complete(run_bot_loop())
 
 def init_bot():
     """Initialize the bot application"""
@@ -194,37 +213,33 @@ def init_bot():
     
     logger.info("🤖 Initializing Telegram bot with webhook...")
     
-    # Create application (don't initialize yet)
+    # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Initialize in separate event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
     
     # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
+    # Setup webhook
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    loop.run_until_complete(application.bot.set_webhook(webhook_url))
+    logger.info(f"✅ Webhook set to: {webhook_url}")
+    
+    # Start bot event loop in background thread
+    Thread(target=start_bot_loop, daemon=True).start()
+    
     logger.info("✅ Telegram bot initialized with webhook!")
 
 def start_flask_server():
     """Start Flask server for webhook"""
-    from hypercorn.asyncio import serve
-    from hypercorn.config import Config
-    import asyncio
-    
-    # Set webhook after bot is created
-    async def set_webhook():
-        await application.initialize()
-        webhook_url = f"{WEBHOOK_URL}/webhook"
-        await application.bot.set_webhook(webhook_url)
-        logger.info(f"✅ Webhook set to: {webhook_url}")
-    
-    # Run webhook setup
-    asyncio.run(set_webhook())
-    
-    # Start Hypercorn server
-    config = Config()
-    config.bind = [f"0.0.0.0:{int(os.getenv('PORT', 10000))}"]
-    
-    asyncio.run(serve(app, config))
+    port = int(os.getenv('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
 
 if __name__ == "__main__":
     init_bot()
