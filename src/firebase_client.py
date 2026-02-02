@@ -36,12 +36,6 @@ class FirebaseClient:
     def transaction_exists(self, gmail_message_id):
         """
         Check if transaction already exists
-        
-        Args:
-            gmail_message_id: Gmail message ID
-            
-        Returns:
-            Boolean - True if exists, False if not
         """
         try:
             docs = self.db.collection('expenses').where(
@@ -56,12 +50,6 @@ class FirebaseClient:
     def save_transaction(self, transaction_data):
         """
         Save transaction to Firestore
-        
-        Args:
-            transaction_data: Dictionary with transaction details
-            
-        Returns:
-            Boolean - True if saved, False if failed or duplicate
         """
         try:
             gmail_message_id = transaction_data.get('gmail_message_id')
@@ -71,7 +59,6 @@ class FirebaseClient:
                 print(f"⚠️ Transaction already exists (Message ID: {gmail_message_id[:20]}...)")
                 return False
             
-            # Prepare data for Firestore
             expense_data = {
                 'merchant': transaction_data.get('merchant'),
                 'amount': float(transaction_data.get('amount', 0)),
@@ -92,7 +79,6 @@ class FirebaseClient:
                 'created_at': firestore.SERVER_TIMESTAMP
             }
             
-            # Add document to Firestore
             self.db.collection('expenses').add(expense_data)
             
             print(f"✅ Saved: {expense_data['currency']} {expense_data['amount']} - {expense_data['merchant'][:40]}")
@@ -101,20 +87,59 @@ class FirebaseClient:
         except Exception as e:
             print(f"❌ Error saving transaction: {str(e)}")
             return False
+
+    def check_duplicate_receipt(self, merchant, amount, date, telegram_user_id):
+        """
+        Check if a similar receipt already exists
+        
+        Args:
+            merchant: Merchant name
+            amount: Transaction amount
+            date: Transaction date (YYYY-MM-DD format)
+            telegram_user_id: User's Telegram ID
+        
+        Returns:
+            Dictionary with 'is_duplicate' (bool) and 'existing_receipt' (doc data if found)
+        """
+        try:
+            docs = self.db.collection('telegram_receipts') \
+                .where('merchant', '==', merchant.upper()) \
+                .where('amount', '==', float(amount)) \
+                .where('date', '==', date) \
+                .where('telegram_user_id', '==', telegram_user_id) \
+                .limit(1) \
+                .stream()
+            
+            existing_receipts = list(docs)
+            
+            if existing_receipts:
+                receipt_data = existing_receipts[0].to_dict()
+                receipt_data['id'] = existing_receipts[0].id
+                
+                print(f"⚠️ Duplicate detected: {merchant} - {amount} on {date}")
+                
+                return {
+                    'is_duplicate': True,
+                    'existing_receipt': receipt_data
+                }
+            
+            return {
+                'is_duplicate': False,
+                'existing_receipt': None
+            }
+            
+        except Exception as e:
+            print(f"❌ Error checking duplicate: {e}")
+            return {
+                'is_duplicate': False,
+                'existing_receipt': None
+            }
     
     def save_telegram_receipt(self, expense_data, telegram_user_id=None):
         """
         Save Telegram receipt expense to Firestore
-        
-        Args:
-            expense_data: Dictionary with receipt details from Gemini extraction
-            telegram_user_id: Telegram user ID
-        
-        Returns:
-            Dictionary with success status and expense_id
         """
         try:
-            # Prepare data for Firestore
             receipt_data = {
                 'merchant': expense_data.get('merchant_name', 'Unknown'),
                 'amount': float(expense_data.get('total_amount', 0)),
@@ -128,73 +153,41 @@ class FirebaseClient:
                 'telegram_user_id': telegram_user_id,
                 'file_path': expense_data.get('file_path'),
                 'confidence': 0.90,
-                
-                # NEW FIELDS (will be None for old receipts - won't break anything)
                 'company_project': expense_data.get('company_project'),
                 'expense_type': expense_data.get('expense_type'),
                 'notes': expense_data.get('notes'),
-                
                 'created_at': firestore.SERVER_TIMESTAMP
             }
             
-            # Remove null values
             receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
             
-            # Add document to Firestore
             doc_ref = self.db.collection('telegram_receipts').add(receipt_data)
             expense_id = doc_ref[1].id
             
             print(f"✅ Saved Telegram receipt: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")
             
-            return {
-                'success': True,
-                'expense_id': expense_id
-            }
+            return {'success': True, 'expense_id': expense_id}
             
         except Exception as e:
             print(f"❌ Error saving Telegram receipt: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            return {'success': False, 'error': str(e)}
     
     def save_batch(self, transactions):
         """
         Save multiple transactions
-        
-        Args:
-            transactions: List of transaction dictionaries
-            
-        Returns:
-            Dictionary with success/failure counts
         """
-        results = {
-            'saved': 0,
-            'duplicates': 0,
-            'failed': 0
-        }
+        results = {'saved': 0, 'duplicates': 0, 'failed': 0}
         
         print(f"\n📦 Saving {len(transactions)} transactions to Firebase...")
         
-        for i, transaction in enumerate(transactions, 1):
-            print(f"[{i}/{len(transactions)}]", end=" ")
-            
+        for transaction in transactions:
             if self.save_transaction(transaction):
                 results['saved'] += 1
             else:
-                # Check if it was duplicate or error
                 if self.transaction_exists(transaction.get('gmail_message_id')):
                     results['duplicates'] += 1
                 else:
                     results['failed'] += 1
-        
-        # Summary
-        print("=" * 60)
-        print("📊 SAVE SUMMARY:")
-        print(f"   ✅ Saved: {results['saved']}")
-        print(f"   ⚠️ Duplicates: {results['duplicates']}")
-        print(f"   ❌ Failed: {results['failed']}")
-        print("=" * 60)
         
         return results
     
@@ -209,10 +202,7 @@ class FirebaseClient:
                 'summary': report_data.get('summary', {}),
                 'created_at': firestore.SERVER_TIMESTAMP
             })
-            
-            print(f"✅ Saved reconciliation: {report_data.get('month')} {report_data.get('year')}")
             return doc_ref[1].id
-            
         except Exception as e:
             print(f"❌ Error saving reconciliation: {e}")
             return None
@@ -221,25 +211,11 @@ class FirebaseClient:
         """Get saved reconciliation reports"""
         try:
             query = self.db.collection('reconciliations')
-            
             if year:
                 query = query.where('year', '==', year)
+            query = query.order_by('created_at', direction=firestore.Query.DESCENDING)
             
-            query = query.order_by(
-                'created_at',
-                direction=firestore.Query.DESCENDING
-            )
-            
-            docs = query.stream()
-            
-            reports = []
-            for doc in docs:
-                data = doc.to_dict()
-                data['id'] = doc.id
-                reports.append(data)
-            
-            return reports
-            
+            return [{**doc.to_dict(), 'id': doc.id} for doc in query.stream()]
         except Exception as e:
             print(f"❌ Error fetching reconciliations: {e}")
             return []
@@ -254,9 +230,7 @@ class FirebaseClient:
             
             for doc in docs:
                 return doc.to_dict().get('created_at')
-            
             return None
-            
         except Exception as e:
             print(f"❌ Error getting last timestamp: {e}")
             return None

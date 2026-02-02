@@ -368,15 +368,81 @@ async def handle_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return WAITING_FOR_DETAILS
 
         # Add new fields to expense data
+                # Add new fields to expense data
         expense_data['company_project'] = company_project
         expense_data['expense_type'] = expense_type.capitalize()
         expense_data['notes'] = notes
 
-        # Save to Firebase
+        # CHECK FOR DUPLICATES BEFORE SAVING
+        merchant = expense_data.get('merchant_name', 'Unknown')
+        amount = expense_data.get('total_amount', 0)
+        date = expense_data.get('date')
+        
+        duplicate_check = firebase_client.check_duplicate_receipt(
+            merchant=merchant,
+            amount=amount,
+            date=date,
+            telegram_user_id=str(user_id)
+        )
+        
+        if duplicate_check['is_duplicate']:
+            existing = duplicate_check['existing_receipt']
+            existing_date = existing.get('created_at')
+            
+            # Format timestamp
+            if existing_date:
+                from datetime import datetime
+                if hasattr(existing_date, 'timestamp'):
+                    uploaded_date = datetime.fromtimestamp(existing_date.timestamp()).strftime('%b %d, %Y at %I:%M %p')
+                else:
+                    uploaded_date = "recently"
+            else:
+                uploaded_date = "previously"
+            
+            duplicate_msg = f"""
+⚠️ **Duplicate Receipt Detected!**
+
+🏪 Merchant: {merchant}
+💰 Amount: {expense_data.get('currency', 'INR')} {amount}
+📅 Date: {date}
+
+❌ This receipt was already uploaded on {uploaded_date}
+
+Details of existing receipt:
+🏢 Company/Project: {existing.get('company_project', 'N/A')}
+💼 Type: {existing.get('expense_type', 'N/A')}
+📝 Notes: {existing.get('notes', 'None')}
+
+**Not saving duplicate.** Send a different receipt.
+"""
+            await update.message.reply_text(duplicate_msg, parse_mode='Markdown')
+            logger.info(f"⚠️ Duplicate prevented: {merchant} - {amount}")
+            
+            # Remove from queue and check for next receipt
+            pending_receipt_queues[user_id].pop(0)
+            
+            if pending_receipt_queues[user_id]:
+                next_receipt = pending_receipt_queues[user_id][0]
+                merchant_next = next_receipt.get('merchant_name', 'Unknown')
+                amount_next = next_receipt.get('total_amount', 0)
+                currency_next = next_receipt.get('currency', 'INR')
+                
+                await update.message.reply_text(
+                    f"📋 **Next receipt in queue:**\n\n"
+                    f"🏪 {merchant_next}\n💰 {currency_next} {amount_next}\n\n"
+                    f"Please provide details"
+                )
+                return WAITING_FOR_DETAILS
+            else:
+                del pending_receipt_queues[user_id]
+                return ConversationHandler.END
+        
+        # If not duplicate, save to Firebase
         save_result = firebase_client.save_telegram_receipt(
             expense_data, 
             telegram_user_id=str(user_id)
         )
+
 
         if save_result.get('success'):
             merchant = expense_data.get('merchant_name', 'Unknown')
