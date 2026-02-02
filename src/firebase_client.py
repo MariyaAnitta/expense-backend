@@ -109,7 +109,7 @@ class FirebaseClient:
         Args:
             expense_data: Dictionary with receipt details from Gemini extraction
             telegram_user_id: Telegram user ID
-            
+        
         Returns:
             Dictionary with success status and expense_id
         """
@@ -128,6 +128,12 @@ class FirebaseClient:
                 'telegram_user_id': telegram_user_id,
                 'file_path': expense_data.get('file_path'),
                 'confidence': 0.90,
+                
+                # NEW FIELDS (will be None for old receipts - won't break anything)
+                'company_project': expense_data.get('company_project'),
+                'expense_type': expense_data.get('expense_type'),
+                'notes': expense_data.get('notes'),
+                
                 'created_at': firestore.SERVER_TIMESTAMP
             }
             
@@ -135,9 +141,7 @@ class FirebaseClient:
             receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
             
             # Add document to Firestore
-            #doc_ref = self.db.collection('expenses').add(receipt_data)
             doc_ref = self.db.collection('telegram_receipts').add(receipt_data)
-
             expense_id = doc_ref[1].id
             
             print(f"✅ Saved Telegram receipt: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")

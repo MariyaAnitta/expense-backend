@@ -1,7 +1,7 @@
 import os
 import logging
 from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler
 from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
@@ -10,6 +10,7 @@ import asyncio
 from threading import Thread
 
 load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -27,19 +28,27 @@ app = Flask(__name__)
 application = None
 bot_loop = None
 
+# Conversation states
+WAITING_FOR_DETAILS = 1
+
+# Store temporary receipt data per user
+pending_receipts = {}
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
     welcome_message = """
 👋 Welcome to ExpenseFlow Bot!
 
 Send me receipt photos, PDFs, or documents and I'll automatically:
+
 ✅ Extract expense details using AI
 ✅ Identify merchant, amount, date, items
+✅ Ask for company/project and expense type
 ✅ Save to your expense tracker
 ✅ Send you instant confirmation
 
 Just send a photo or file to get started!
-    """
+"""
     await update.message.reply_text(welcome_message)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,125 +56,264 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         logger.info(f"📸 Received photo from user {user_id}")
-        
+
         # Send processing message
         await update.message.reply_text("⏳ Processing your receipt...")
-        
+
         # Get the highest resolution photo
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
-        
+
         # Download to temp folder
         file_path = f"temp/receipt_{photo.file_id}.jpg"
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
-        
+
         logger.info(f"✅ Downloaded photo to {file_path}")
-        
+
         # Extract expense data using Gemini
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
-        
+
         # Check if extraction was successful
         if expense_data.get('error'):
             await update.message.reply_text(
                 f"⚠️ Could not process receipt:\n{expense_data['error']}\n\nPlease try again with a clearer image."
             )
-            return
-        
-        # Save to Firebase
-        save_result = firebase_client.save_telegram_receipt(expense_data, telegram_user_id=str(user_id))
-        
-        if not save_result.get('success'):
-            logger.error(f"❌ Failed to save to Firebase: {save_result.get('error')}")
-        
-        # Format confirmation message
+            return ConversationHandler.END
+
+        # Store expense data temporarily
+        pending_receipts[user_id] = expense_data
+
+        # Format extracted info
         merchant = expense_data.get('merchant_name', 'Unknown')
         amount = expense_data.get('total_amount', 0)
         currency = expense_data.get('currency', 'INR')
         date = expense_data.get('date', 'Unknown')
-        category = expense_data.get('category', 'Other')
-        items = expense_data.get('items', [])
-        
-        confirmation_message = f"""
-✅ **Expense Saved!**
+
+        # Ask for additional details
+        details_prompt = f"""
+✅ **Receipt Extracted!**
 
 🏪 Merchant: {merchant}
 💰 Amount: {currency} {amount}
 📅 Date: {date}
-📂 Category: {category}
+
+📋 **Please provide details in this format:**
+
+Company/Project: [name or 'Personal']
+Type: [Business/Personal/Reimbursable]
+Notes: [optional or 'skip']
+
+**Example:**
+Company/Project: 10xDS
+Type: Business
+Notes: Client meeting lunch
+
+(You can type 'skip' to save without details)
 """
+        await update.message.reply_text(details_prompt, parse_mode='Markdown')
         
-        if items:
-            items_text = "\n".join([f"  • {item}" for item in items[:5]])
-            confirmation_message += f"\n🛒 Items:\n{items_text}"
-        
-        await update.message.reply_text(confirmation_message, parse_mode='Markdown')
-        
-        logger.info(f"✅ Processed expense: {merchant} - {currency} {amount}")
-        
+        return WAITING_FOR_DETAILS
+
     except Exception as e:
         logger.error(f"❌ Error handling photo: {e}")
         await update.message.reply_text("❌ Sorry, there was an error processing your receipt. Please try again.")
+        return ConversationHandler.END
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle PDF or document receipts sent by users"""
     try:
         user_id = update.effective_user.id
         logger.info(f"📄 Received document from user {user_id}")
-        
+
         # Send processing message
         await update.message.reply_text("⏳ Processing your document...")
-        
+
         document = update.message.document
         file = await context.bot.get_file(document.file_id)
-        
+
         # Download to temp folder
         file_extension = document.file_name.split('.')[-1]
         file_path = f"temp/receipt_{document.file_id}.{file_extension}"
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
-        
+
         logger.info(f"✅ Downloaded document to {file_path}")
-        
+
         # Extract expense data using Gemini
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
-        
+
         # Check if extraction was successful
         if expense_data.get('error'):
             await update.message.reply_text(
                 f"⚠️ Could not process document:\n{expense_data['error']}\n\nPlease try again."
             )
-            return
-        
-        # Save to Firebase
-        save_result = firebase_client.save_telegram_receipt(expense_data, telegram_user_id=str(user_id))
-        
-        if not save_result.get('success'):
-            logger.error(f"❌ Failed to save to Firebase: {save_result.get('error')}")
-        
-        # Format confirmation message
+            return ConversationHandler.END
+
+        # Store expense data temporarily
+        pending_receipts[user_id] = expense_data
+
+        # Format extracted info
         merchant = expense_data.get('merchant_name', 'Unknown')
         amount = expense_data.get('total_amount', 0)
         currency = expense_data.get('currency', 'INR')
         date = expense_data.get('date', 'Unknown')
-        category = expense_data.get('category', 'Other')
-        
-        confirmation_message = f"""
-✅ **Expense Saved!**
+
+        # Ask for additional details
+        details_prompt = f"""
+✅ **Document Extracted!**
 
 🏪 Merchant: {merchant}
 💰 Amount: {currency} {amount}
 📅 Date: {date}
-📂 Category: {category}
+
+📋 **Please provide details in this format:**
+
+Company/Project: [name or 'Personal']
+Type: [Business/Personal/Reimbursable]
+Notes: [optional or 'skip']
+
+**Example:**
+Company/Project: 10xDS
+Type: Business
+Notes: Team meeting expense
+
+(You can type 'skip' to save without details)
 """
+        await update.message.reply_text(details_prompt, parse_mode='Markdown')
         
-        await update.message.reply_text(confirmation_message, parse_mode='Markdown')
-        
-        logger.info(f"✅ Processed expense: {merchant} - {currency} {amount}")
-        
+        return WAITING_FOR_DETAILS
+
     except Exception as e:
         logger.error(f"❌ Error handling document: {e}")
         await update.message.reply_text("❌ Sorry, there was an error processing your document. Please try again.")
+        return ConversationHandler.END
+
+async def handle_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle user's response with expense details"""
+    try:
+        user_id = update.effective_user.id
+        user_message = update.message.text.strip()
+
+        # Check if user wants to skip
+        if user_message.lower() == 'skip':
+            expense_data = pending_receipts.get(user_id)
+            if not expense_data:
+                await update.message.reply_text("⚠️ No pending receipt found. Please send a new receipt.")
+                return ConversationHandler.END
+
+            # Save without additional details
+            save_result = firebase_client.save_telegram_receipt(
+                expense_data, 
+                telegram_user_id=str(user_id)
+            )
+
+            if save_result.get('success'):
+                merchant = expense_data.get('merchant_name', 'Unknown')
+                amount = expense_data.get('total_amount', 0)
+                currency = expense_data.get('currency', 'INR')
+                
+                await update.message.reply_text(
+                    f"✅ **Expense Saved!**\n\n🏪 {merchant}\n💰 {currency} {amount}\n\n(No additional details added)"
+                )
+            else:
+                await update.message.reply_text("❌ Failed to save expense. Please try again.")
+
+            # Clean up
+            del pending_receipts[user_id]
+            return ConversationHandler.END
+
+        # Parse user input
+        lines = user_message.split('\n')
+        company_project = None
+        expense_type = None
+        notes = None
+
+        for line in lines:
+            line = line.strip()
+            if line.lower().startswith('company/project:') or line.lower().startswith('company:') or line.lower().startswith('project:'):
+                company_project = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('type:'):
+                expense_type = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('notes:'):
+                notes_value = line.split(':', 1)[1].strip()
+                notes = None if notes_value.lower() == 'skip' else notes_value
+
+        # Validate required fields
+        if not company_project or not expense_type:
+            await update.message.reply_text(
+                "⚠️ Please provide both Company/Project and Type.\n\n"
+                "Use this format:\n"
+                "Company/Project: [name]\n"
+                "Type: [Business/Personal/Reimbursable]\n"
+                "Notes: [optional or skip]"
+            )
+            return WAITING_FOR_DETAILS
+
+        # Validate expense type
+        valid_types = ['business', 'personal', 'reimbursable', 'non-reimbursable']
+        if expense_type.lower() not in valid_types:
+            await update.message.reply_text(
+                f"⚠️ Invalid expense type: '{expense_type}'\n\n"
+                f"Valid types: Business, Personal, Reimbursable, Non-reimbursable"
+            )
+            return WAITING_FOR_DETAILS
+
+        # Get stored expense data
+        expense_data = pending_receipts.get(user_id)
+        if not expense_data:
+            await update.message.reply_text("⚠️ No pending receipt found. Please send a new receipt.")
+            return ConversationHandler.END
+
+        # Add new fields to expense data
+        expense_data['company_project'] = company_project
+        expense_data['expense_type'] = expense_type.capitalize()
+        expense_data['notes'] = notes
+
+        # Save to Firebase
+        save_result = firebase_client.save_telegram_receipt(
+            expense_data, 
+            telegram_user_id=str(user_id)
+        )
+
+        if save_result.get('success'):
+            merchant = expense_data.get('merchant_name', 'Unknown')
+            amount = expense_data.get('total_amount', 0)
+            currency = expense_data.get('currency', 'INR')
+            
+            confirmation_msg = f"""
+✅ **Expense Saved!**
+
+🏪 Merchant: {merchant}
+💰 Amount: {currency} {amount}
+🏢 Company/Project: {company_project}
+💼 Type: {expense_type.capitalize()}
+"""
+            if notes:
+                confirmation_msg += f"📝 Notes: {notes}"
+
+            await update.message.reply_text(confirmation_msg, parse_mode='Markdown')
+            logger.info(f"✅ Saved expense: {merchant} - {currency} {amount} ({company_project}, {expense_type})")
+        else:
+            await update.message.reply_text("❌ Failed to save expense. Please try again.")
+
+        # Clean up
+        del pending_receipts[user_id]
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"❌ Error handling details: {e}")
+        await update.message.reply_text("❌ Error processing your details. Please try again.")
+        return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the conversation"""
+    user_id = update.effective_user.id
+    if user_id in pending_receipts:
+        del pending_receipts[user_id]
+    
+    await update.message.reply_text("❌ Receipt processing cancelled. Send a new receipt to start again.")
+    return ConversationHandler.END
 
 @app.route('/')
 def health_check():
@@ -178,14 +326,15 @@ def webhook():
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
-        
+
         # Schedule update processing in the bot's event loop
         asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             bot_loop
         )
-        
+
         return jsonify({"ok": True}), 200
+
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -206,34 +355,48 @@ def start_bot_loop():
 def init_bot():
     """Initialize the bot application"""
     global application
-    
+
     if not TELEGRAM_BOT_TOKEN:
         logger.error("❌ TELEGRAM_BOT_TOKEN not found!")
         return
-    
+
     logger.info("🤖 Initializing Telegram bot with webhook...")
-    
+
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
+
     # Initialize in separate event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(application.initialize())
-    
+
+    # Create conversation handler
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.PHOTO, handle_photo),
+            MessageHandler(filters.Document.ALL, handle_document)
+        ],
+        states={
+            WAITING_FOR_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_details)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+        per_user=True,
+        per_chat=True
+    )
+
     # Add handlers
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
+    application.add_handler(conv_handler)
+
     # Setup webhook
     webhook_url = f"{WEBHOOK_URL}/webhook"
     loop.run_until_complete(application.bot.set_webhook(webhook_url))
+
     logger.info(f"✅ Webhook set to: {webhook_url}")
-    
+
     # Start bot event loop in background thread
     Thread(target=start_bot_loop, daemon=True).start()
-    
+
     logger.info("✅ Telegram bot initialized with webhook!")
 
 def start_flask_server():
