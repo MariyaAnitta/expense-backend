@@ -9,10 +9,7 @@ from firebase_client import FirebaseClient
 from flask import Flask, request, jsonify
 import asyncio
 from threading import Thread
-import nest_asyncio
-
-# Apply nest_asyncio to allow nested event loops
-nest_asyncio.apply()
+from queue import Queue
 
 load_dotenv()
 
@@ -31,6 +28,8 @@ app = Flask(__name__)
 
 # Initialize bot application
 application = None
+bot_loop = None
+update_queue = Queue()
 
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES = range(4)
@@ -45,15 +44,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
 👋 Welcome to ExpenseFlow Bot!
 
-Send me receipt photos or documents 
+Send me receipt photos or documents and I'll automatically:
+✅ Extract expense details using AI
+✅ Ask if it's Personal or Business
+✅ Track reimbursements for Business expenses
+✅ Save to your expense tracker
 
-How to use:
+**How to use:**
 1️⃣ Send receipt photo(s)
 2️⃣ Reply: P (Personal) or B (Business)
 3️⃣ For Business: Answer reimbursement & project questions
 4️⃣ Add notes or skip
 
-You can send multiple receipts at once!
+**You can send multiple receipts at once!**
 
 Just send a photo to get started! 📸
 """
@@ -382,7 +385,7 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     final_msg = f"""📝 Notes added!
 
 ✅ Final expense:
-🏪 {merchant.upper()}
+🏪 {merchant.UPPER()}
 💰 {currency} {amount}
 📂 {category_text}"""
                     if main_category == 'Business':
@@ -454,14 +457,30 @@ def webhook():
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         
-        # Don't create a new loop - reuse the existing one
-        # Just run the update processing
-        asyncio.run(application.process_update(update))
+        # Put update in queue for bot loop to process
+        asyncio.run_coroutine_threadsafe(
+            application.process_update(update),
+            bot_loop
+        )
         
         return jsonify({"ok": True}), 200
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+async def run_bot_loop():
+    """Run the bot's event loop - keeps it alive"""
+    while True:
+        await asyncio.sleep(3600)  # Sleep 1 hour
+
+
+def start_bot_loop():
+    """Start bot event loop in background thread"""
+    global bot_loop
+    bot_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bot_loop)
+    bot_loop.run_until_complete(run_bot_loop())
 
 
 def init_bot():
@@ -502,7 +521,9 @@ def init_bot():
     webhook_url = f"{WEBHOOK_URL}/webhook"
     loop.run_until_complete(application.bot.set_webhook(webhook_url))
     logger.info(f"✅ Webhook set to: {webhook_url}")
-    loop.close()
+    
+    # Start bot event loop in background thread
+    Thread(target=start_bot_loop, daemon=True).start()
     
     logger.info("✅ Telegram bot initialized with webhook!")
 
