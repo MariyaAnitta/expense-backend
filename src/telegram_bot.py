@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = "https://xpenseflow-telegram-bot.onrender.com"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://xpenseflow-telegram-bot.onrender.com")
 
 # Initialize receipt extractor and Firebase client
 receipt_extractor = ReceiptExtractor()
@@ -30,92 +30,64 @@ application = None
 bot_loop = None
 
 # Conversation states
-WAITING_FOR_DETAILS = 1
+WAITING_FOR_CATEGORY = 1
+WAITING_FOR_REIMBURSEMENT = 2
+WAITING_FOR_PROJECT = 3
+WAITING_FOR_NOTES = 4
 
-# Store pending receipt queues per user (supports multiple receipts)
+# Store pending receipt queues per user
+# Structure: {user_id: [receipt1, receipt2, ...]}
 pending_receipt_queues = {}
 
+# Store conversation state per user
+user_states = {}
 
-def parse_expense_details(text):
-    """
-    Flexibly parse expense details from user input.
-    Supports multiple formats:
-    - Multi-line format
-    - Single line: "10xDS, Business, Client meeting"
-    - Keywords anywhere
-    """
-    text = text.strip()
+
+def format_items(items):
+    """Format items list for display"""
+    if not items or len(items) == 0:
+        return None
     
-    company_project = None
-    expense_type = None
-    notes = None
+    formatted = "🛒 Items:\n"
+    for item in items:
+        name = item.get('name', 'Unknown')
+        qty = item.get('quantity', 1)
+        amount = item.get('amount', 0)
+        formatted += f"• {name} ({qty}x) - INR {amount:.2f}\n"
     
-    # Try multi-line format first
-    lines = text.split('\n')
-    for line in lines:
-        line = line.strip()
-        line_lower = line.lower()
-        
-        if 'company' in line_lower or 'project' in line_lower:
-            # Extract value after colon
-            if ':' in line:
-                company_project = line.split(':', 1)[1].strip()
-            else:
-                # Try to extract after the word
-                parts = re.split(r'company/project|company|project', line, flags=re.IGNORECASE)
-                if len(parts) > 1:
-                    company_project = parts[1].strip()
-        
-        elif 'type' in line_lower and 'company' not in line_lower:
-            if ':' in line:
-                expense_type = line.split(':', 1)[1].strip()
-            else:
-                parts = re.split(r'type', line, flags=re.IGNORECASE)
-                if len(parts) > 1:
-                    expense_type = parts[1].strip()
-        
-        elif 'note' in line_lower:
-            if ':' in line:
-                notes_value = line.split(':', 1)[1].strip()
-                notes = None if notes_value.lower() == 'skip' else notes_value
+    return formatted.strip()
+
+
+def format_receipt_extraction(receipt_data, receipt_num=None, total_receipts=None):
+    """Format receipt extraction message"""
+    merchant = receipt_data.get('merchant_name', 'Unknown')
+    amount = receipt_data.get('total_amount', 0)
+    currency = receipt_data.get('currency', 'INR')
+    date = receipt_data.get('date', 'Unknown')
+    category = receipt_data.get('category', 'Other')
+    items = receipt_data.get('items', [])
+    tax = receipt_data.get('tax_amount')
     
-    # If multi-line parsing didn't work, try comma-separated format
-    if not company_project or not expense_type:
-        parts = [p.strip() for p in text.split(',')]
-        
-        if len(parts) >= 2:
-            company_project = parts[0]
-            expense_type = parts[1]
-            if len(parts) >= 3 and parts[2].lower() != 'skip':
-                notes = parts[2]
+    # Header
+    if receipt_num and total_receipts:
+        message = f"✅ Receipt {receipt_num}/{total_receipts} Extracted!\n\n"
+    else:
+        message = "✅ Receipt Extracted!\n\n"
     
-    # If still nothing, try to extract keywords
-    if not company_project or not expense_type:
-        text_lower = text.lower()
-        
-        # Try to find expense type keywords
-        type_keywords = {
-            'business': 'Business',
-            'personal': 'Personal',
-            'reimbursable': 'Reimbursable',
-            'non-reimbursable': 'Non-reimbursable'
-        }
-        
-        for keyword, value in type_keywords.items():
-            if keyword in text_lower:
-                expense_type = value
-                # Remove the type keyword to get company/project
-                text_cleaned = re.sub(keyword, '', text_lower, flags=re.IGNORECASE).strip()
-                text_cleaned = re.sub(r'[,:]', '', text_cleaned).strip()
-                if text_cleaned and not company_project:
-                    company_project = text_cleaned
-                break
+    # Basic info
+    message += f"🏪 Merchant: {merchant}\n"
+    message += f"💰 Amount: {currency} {amount}\n"
+    message += f"📅 Date: {date}\n"
+    message += f"📦 Category: {category}\n"
     
-    return {
-        'company_project': company_project,
-        'expense_type': expense_type,
-        'notes': notes
-    }
+    # Items (if available)
+    items_text = format_items(items)
+    if items_text:
+        message += f"\n{items_text}\n"
+        if tax:
+            message += f"Tax: {currency} {tax}\n"
+    
+    return message
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,24 +95,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
 👋 Welcome to ExpenseFlow Bot!
 
-Send me receipt photos, PDFs, or documents and I'll automatically:
+Send me receipt photos (single or multiple) and I'll:
 
-✅ Extract expense details using AI
-✅ Ask for company/project and expense type
+✅ Extract details using AI
+✅ Guide you through categorization
 ✅ Save to your expense tracker
 
-**How to use:**
-1️⃣ Send receipt photo(s)
-2️⃣ I'll extract the details
-3️⃣ Reply with: Company, Type, Notes
+**Categories:**
+📝 Personal - Your personal expenses
+💼 Business - Work expenses
+  ├─ Reimbursable (you'll be paid back)
+  └─ Company expense (no reimbursement)
 
-**Example formats (all work):**
-• 10xDS, Business, Client meeting
-• Company: 10xDS, Type: Business
-• Personal, Personal, Shopping
-• Skip (to save without details)
-
-Just send a photo to get started!
+Just send a photo to get started! 📸
 """
     await update.message.reply_text(welcome_message)
 
@@ -151,8 +118,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         logger.info(f"📸 Received photo from user {user_id}")
 
-        # Send processing message
-        await update.message.reply_text("⏳ Processing your receipt...")
+        # Check if user already has pending receipts being processed
+        if user_id in user_states and user_states[user_id].get('processing'):
+            await update.message.reply_text(
+                "⏳ Please finish categorizing your current receipts first!\n\n"
+                "Type /cancel to start over."
+            )
+            return user_states[user_id].get('state', ConversationHandler.END)
+
+        # Initialize queue if not exists
+        if user_id not in pending_receipt_queues:
+            pending_receipt_queues[user_id] = []
 
         # Get the highest resolution photo
         photo = update.message.photo[-1]
@@ -165,345 +141,394 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         logger.info(f"✅ Downloaded photo to {file_path}")
 
-        # Extract expense data using Gemini
-        expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
+        # Store temporarily
+        pending_receipt_queues[user_id].append({
+            'file_path': file_path,
+            'file_id': photo.file_id,
+            'extracted': False
+        })
 
-        # Check if extraction was successful
-        if expense_data.get('error'):
-            await update.message.reply_text(
-                f"⚠️ Could not process receipt:\n{expense_data['error']}\n\nPlease try again with a clearer image."
-            )
-            return ConversationHandler.END
-
-        # Initialize queue if not exists
-        if user_id not in pending_receipt_queues:
-            pending_receipt_queues[user_id] = []
+        # Don't process yet - wait for more photos or timeout
+        # Set a flag that user is uploading
+        if user_id not in user_states:
+            user_states[user_id] = {}
         
-        # Add to queue
-        pending_receipt_queues[user_id].append(expense_data)
-
-        # Format extracted info
-        merchant = expense_data.get('merchant_name', 'Unknown')
-        amount = expense_data.get('total_amount', 0)
-        currency = expense_data.get('currency', 'INR')
-        date = expense_data.get('date', 'Unknown')
-
-        queue_position = len(pending_receipt_queues[user_id])
-
-        # Ask for additional details
-        details_prompt = f"""
-✅ **Receipt {queue_position} Extracted!**
-
-🏪 Merchant: {merchant}
-💰 Amount: {currency} {amount}
-📅 Date: {date}
-
-📋 **Reply with details (flexible format):**
-
-**Quick:** 10xDS, Business, Client meeting
-**Or:** Personal, Personal, Shopping
-**Or:** Type 'skip' to save without details
-
-(Any format works - I'm smart! 🤖)
-"""
-        await update.message.reply_text(details_prompt, parse_mode='Markdown')
+        user_states[user_id]['uploading'] = True
         
-        return WAITING_FOR_DETAILS
+        # Start a timer - if no more photos in 2 seconds, start processing
+        if 'timer' in user_states[user_id]:
+            user_states[user_id]['timer'].cancel()
+        
+        timer = asyncio.create_task(process_after_delay(update, context, user_id))
+        user_states[user_id]['timer'] = timer
+        
+        return ConversationHandler.END
 
     except Exception as e:
         logger.error(f"❌ Error handling photo: {e}")
-        await update.message.reply_text("❌ Sorry, there was an error processing your receipt. Please try again.")
+        await update.message.reply_text("❌ Error receiving photo. Please try again.")
         return ConversationHandler.END
 
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle PDF or document receipts sent by users"""
+async def process_after_delay(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Process receipts after 2 second delay (allows batch upload)"""
+    try:
+        await asyncio.sleep(2)  # Wait 2 seconds for more uploads
+        
+        if user_id not in pending_receipt_queues or len(pending_receipt_queues[user_id]) == 0:
+            return
+        
+        user_states[user_id]['uploading'] = False
+        user_states[user_id]['processing'] = True
+        
+        total_receipts = len(pending_receipt_queues[user_id])
+        
+        # Show processing message
+        if total_receipts > 1:
+            await update.message.reply_text(
+                f"📸 Received {total_receipts} receipts!\n⏳ Processing..."
+            )
+        else:
+            await update.message.reply_text("⏳ Processing your receipt...")
+        
+        # Extract all receipts
+        for i, receipt_info in enumerate(pending_receipt_queues[user_id]):
+            if not receipt_info['extracted']:
+                expense_data = receipt_extractor.extract_expense_from_receipt(receipt_info['file_path'])
+                
+                if expense_data.get('error'):
+                    await update.message.reply_text(
+                        f"⚠️ Receipt {i+1}: Could not process\n{expense_data['error']}\n\nSkipping..."
+                    )
+                    pending_receipt_queues[user_id][i]['error'] = True
+                    continue
+                
+                pending_receipt_queues[user_id][i]['expense_data'] = expense_data
+                pending_receipt_queues[user_id][i]['extracted'] = True
+        
+        # Remove failed receipts
+        pending_receipt_queues[user_id] = [r for r in pending_receipt_queues[user_id] if not r.get('error')]
+        
+        if len(pending_receipt_queues[user_id]) == 0:
+            await update.message.reply_text("❌ Could not process any receipts. Please try again.")
+            del pending_receipt_queues[user_id]
+            del user_states[user_id]
+            return
+        
+        # Start processing first receipt
+        await ask_category_for_current_receipt(update, context, user_id)
+        
+    except Exception as e:
+        logger.error(f"❌ Error in process_after_delay: {e}")
+
+
+async def ask_category_for_current_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Ask category for the current receipt in queue"""
+    try:
+        if user_id not in pending_receipt_queues or len(pending_receipt_queues[user_id]) == 0:
+            return ConversationHandler.END
+        
+        current_receipt = pending_receipt_queues[user_id][0]
+        expense_data = current_receipt['expense_data']
+        total_receipts = len(pending_receipt_queues[user_id])
+        current_num = user_states[user_id].get('processed_count', 0) + 1
+        
+        # Format extraction message
+        extraction_msg = format_receipt_extraction(
+            expense_data, 
+            receipt_num=current_num if total_receipts > 1 else None,
+            total_receipts=total_receipts if total_receipts > 1 else None
+        )
+        
+        # Add category question
+        extraction_msg += "\n\n📋 Is this Personal or Business?\n\n"
+        extraction_msg += "Reply:\n• P or Personal\n• B or Business"
+        
+        await update.message.reply_text(extraction_msg)
+        
+        user_states[user_id]['state'] = WAITING_FOR_CATEGORY
+        return WAITING_FOR_CATEGORY
+        
+    except Exception as e:
+        logger.error(f"❌ Error asking category: {e}")
+        return ConversationHandler.END
+
+
+async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Personal or Business category selection"""
     try:
         user_id = update.effective_user.id
-        logger.info(f"📄 Received document from user {user_id}")
-
-        # Send processing message
-        await update.message.reply_text("⏳ Processing your document...")
-
-        document = update.message.document
-        file = await context.bot.get_file(document.file_id)
-
-        # Download to temp folder
-        file_extension = document.file_name.split('.')[-1]
-        file_path = f"temp/receipt_{document.file_id}.{file_extension}"
-        os.makedirs("temp", exist_ok=True)
-        await file.download_to_drive(file_path)
-
-        logger.info(f"✅ Downloaded document to {file_path}")
-
-        # Extract expense data using Gemini
-        expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
-
-        # Check if extraction was successful
-        if expense_data.get('error'):
-            await update.message.reply_text(
-                f"⚠️ Could not process document:\n{expense_data['error']}\n\nPlease try again."
-            )
-            return ConversationHandler.END
-
-        # Initialize queue if not exists
-        if user_id not in pending_receipt_queues:
-            pending_receipt_queues[user_id] = []
+        text = update.message.text.strip().upper()
         
-        # Add to queue
-        pending_receipt_queues[user_id].append(expense_data)
+        if user_id not in pending_receipt_queues or len(pending_receipt_queues[user_id]) == 0:
+            await update.message.reply_text("❌ No pending receipts. Send a receipt to start!")
+            return ConversationHandler.END
+        
+        # Parse category
+        is_personal = text in ['P', 'PERSONAL']
+        is_business = text in ['B', 'BUSINESS']
+        
+        if not is_personal and not is_business:
+            await update.message.reply_text(
+                "❌ Please reply with 'P' or 'B'\n\n"
+                "• P = Personal\n• B = Business"
+            )
+            return WAITING_FOR_CATEGORY
+        
+        # Store category
+        current_receipt = pending_receipt_queues[user_id][0]
+        current_receipt['category'] = 'Personal' if is_personal else 'Business'
+        
+        if is_personal:
+            # Personal expense - save and ask for notes
+            expense_data = current_receipt['expense_data']
+            merchant = expense_data.get('merchant_name', 'Unknown')
+            amount = expense_data.get('total_amount', 0)
+            currency = expense_data.get('currency', 'INR')
+            date = expense_data.get('date', 'Unknown')
+            
+            message = f"✅ Expense Saved!\n\n"
+            message += f"🏪 Merchant: {merchant}\n"
+            message += f"💰 Amount: {currency} {amount}\n"
+            message += f"📅 Date: {date}\n"
+            message += f"📂 Category: Personal\n"
+            message += f"📝 Notes: -\n\n"
+            message += "Want to add notes? Reply with text or type 'skip'"
+            
+            await update.message.reply_text(message)
+            user_states[user_id]['state'] = WAITING_FOR_NOTES
+            return WAITING_FOR_NOTES
+            
+        else:
+            # Business expense - ask about reimbursement
+            message = "💼 Business Expense\n\n"
+            message += "Will you be reimbursed for this?\n\n"
+            message += "Reply:\n• Y or Yes (Reimbursable)\n• N or No (Company expense)"
+            
+            await update.message.reply_text(message)
+            user_states[user_id]['state'] = WAITING_FOR_REIMBURSEMENT
+            return WAITING_FOR_REIMBURSEMENT
+            
+    except Exception as e:
+        logger.error(f"❌ Error handling category: {e}")
+        await update.message.reply_text("❌ Error processing. Please try again.")
+        return ConversationHandler.END
 
-        # Format extracted info
+
+async def handle_reimbursement(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle reimbursement question"""
+    try:
+        user_id = update.effective_user.id
+        text = update.message.text.strip().upper()
+        
+        if user_id not in pending_receipt_queues or len(pending_receipt_queues[user_id]) == 0:
+            await update.message.reply_text("❌ No pending receipts. Send a receipt to start!")
+            return ConversationHandler.END
+        
+        is_yes = text in ['Y', 'YES']
+        is_no = text in ['N', 'NO']
+        
+        if not is_yes and not is_no:
+            await update.message.reply_text(
+                "❌ Please reply with 'Y' or 'N'\n\n"
+                "• Y = Reimbursable\n• N = Company expense"
+            )
+            return WAITING_FOR_REIMBURSEMENT
+        
+        # Store reimbursement status
+        current_receipt = pending_receipt_queues[user_id][0]
+        current_receipt['is_reimbursable'] = is_yes
+        
+        # Ask for project
+        message = "🏢 Which client/project is this for?\n\n"
+        message += "Examples:\n• 10xDS\n• Acme Corp\n• Internal\n• Type 'skip' to save without project"
+        
+        # If there's a last used project, suggest it
+        if user_id in user_states and 'last_project' in user_states[user_id]:
+            last_project = user_states[user_id]['last_project']
+            message = f"🏢 Which client/project is this for?\n\n"
+            message += f"Last used: {last_project}\n"
+            message += f"• Type '1' for {last_project}\n"
+            message += f"• Or type new project name\n"
+            message += f"• Type 'skip' for no project"
+        
+        await update.message.reply_text(message)
+        user_states[user_id]['state'] = WAITING_FOR_PROJECT
+        return WAITING_FOR_PROJECT
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling reimbursement: {e}")
+        return ConversationHandler.END
+
+
+async def handle_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle project name"""
+    try:
+        user_id = update.effective_user.id
+        text = update.message.text.strip()
+        
+        if user_id not in pending_receipt_queues or len(pending_receipt_queues[user_id]) == 0:
+            await update.message.reply_text("❌ No pending receipts. Send a receipt to start!")
+            return ConversationHandler.END
+        
+        current_receipt = pending_receipt_queues[user_id][0]
+        expense_data = current_receipt['expense_data']
+        
+        # Handle project input
+        project = None
+        if text == '1' and user_id in user_states and 'last_project' in user_states[user_id]:
+            project = user_states[user_id]['last_project']
+        elif text.lower() != 'skip':
+            project = text
+            user_states[user_id]['last_project'] = project  # Remember for next time
+        
+        current_receipt['project'] = project
+        
+        # Show saved confirmation
         merchant = expense_data.get('merchant_name', 'Unknown')
         amount = expense_data.get('total_amount', 0)
         currency = expense_data.get('currency', 'INR')
         date = expense_data.get('date', 'Unknown')
-
-        queue_position = len(pending_receipt_queues[user_id])
-
-        # Ask for additional details
-        details_prompt = f"""
-✅ **Receipt {queue_position} Extracted!**
-
-🏪 Merchant: {merchant}
-💰 Amount: {currency} {amount}
-📅 Date: {date}
-
-📋 **Reply with details (flexible format):**
-
-**Quick:** 10xDS, Business, Client meeting
-**Or:** Personal, Personal, Shopping
-**Or:** Type 'skip' to save without details
-
-(Any format works! 🤖)
-"""
-        await update.message.reply_text(details_prompt, parse_mode='Markdown')
+        is_reimbursable = current_receipt.get('is_reimbursable', False)
         
-        return WAITING_FOR_DETAILS
-
+        message = f"✅ Expense Saved!\n\n"
+        message += f"🏪 Merchant: {merchant}\n"
+        message += f"💰 Amount: {currency} {amount}\n"
+        message += f"📅 Date: {date}\n"
+        message += f"📂 Category: Business - {'Reimbursable' if is_reimbursable else 'Company expense'}\n"
+        if project:
+            message += f"🏢 Project: {project}\n"
+        message += f"\nWant to add notes? Reply or type 'skip'"
+        
+        await update.message.reply_text(message)
+        user_states[user_id]['state'] = WAITING_FOR_NOTES
+        return WAITING_FOR_NOTES
+        
     except Exception as e:
-        logger.error(f"❌ Error handling document: {e}")
-        await update.message.reply_text("❌ Sorry, there was an error processing your document. Please try again.")
+        logger.error(f"❌ Error handling project: {e}")
         return ConversationHandler.END
 
 
-async def handle_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user's response with expense details"""
+async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle notes and complete receipt processing"""
     try:
         user_id = update.effective_user.id
-        user_message = update.message.text.strip()
-
-        # Check if user has pending receipts
-        if user_id not in pending_receipt_queues or not pending_receipt_queues[user_id]:
-            await update.message.reply_text("⚠️ No pending receipts. Please send a new receipt photo.")
+        text = update.message.text.strip()
+        
+        if user_id not in pending_receipt_queues or len(pending_receipt_queues[user_id]) == 0:
+            await update.message.reply_text("❌ No pending receipts. Send a receipt to start!")
             return ConversationHandler.END
-
-        # Get the first receipt from queue
-        expense_data = pending_receipt_queues[user_id][0]
-
-        # Check if user wants to skip
-        if user_message.lower() == 'skip':
-            # Save without additional details
-            save_result = firebase_client.save_telegram_receipt(
-                expense_data, 
-                telegram_user_id=str(user_id)
-            )
-
-            if save_result.get('success'):
-                merchant = expense_data.get('merchant_name', 'Unknown')
-                amount = expense_data.get('total_amount', 0)
-                currency = expense_data.get('currency', 'INR')
-                
-                await update.message.reply_text(
-                    f"✅ **Expense Saved!**\n\n🏪 {merchant}\n💰 {currency} {amount}\n\n(No additional details)"
-                )
-            else:
-                await update.message.reply_text("❌ Failed to save expense. Please try again.")
-
-            # Remove from queue
-            pending_receipt_queues[user_id].pop(0)
-            
-            # Check if more receipts in queue
-            if pending_receipt_queues[user_id]:
-                next_receipt = pending_receipt_queues[user_id][0]
-                merchant = next_receipt.get('merchant_name', 'Unknown')
-                amount = next_receipt.get('total_amount', 0)
-                currency = next_receipt.get('currency', 'INR')
-                
-                await update.message.reply_text(
-                    f"📋 **Next receipt in queue:**\n\n"
-                    f"🏪 {merchant}\n💰 {currency} {amount}\n\n"
-                    f"Please provide details or type 'skip'"
-                )
-                return WAITING_FOR_DETAILS
-            else:
-                # No more receipts
-                del pending_receipt_queues[user_id]
-                await update.message.reply_text("🎉 All receipts processed! Send more anytime.")
-                return ConversationHandler.END
-
-        # Parse user input using flexible parser
-        parsed = parse_expense_details(user_message)
-        company_project = parsed['company_project']
-        expense_type = parsed['expense_type']
-        notes = parsed['notes']
-
-        # Validate required fields
-        if not company_project or not expense_type:
-            await update.message.reply_text(
-                "⚠️ Could not understand. Please provide at least:\n"
-                "• Company/Project name\n"
-                "• Type (Business/Personal/Reimbursable)\n\n"
-                "Example: 10xDS, Business, Client meeting"
-            )
-            return WAITING_FOR_DETAILS
-
-        # Validate expense type
-        valid_types = ['business', 'personal', 'reimbursable', 'non-reimbursable']
-        if expense_type.lower() not in valid_types:
-            await update.message.reply_text(
-                f"⚠️ Invalid expense type: '{expense_type}'\n\n"
-                f"Valid types: Business, Personal, Reimbursable"
-            )
-            return WAITING_FOR_DETAILS
-
-        # Add new fields to expense data
-                # Add new fields to expense data
-        expense_data['company_project'] = company_project
-        expense_data['expense_type'] = expense_type.capitalize()
+        
+        current_receipt = pending_receipt_queues[user_id][0]
+        expense_data = current_receipt['expense_data']
+        
+        # Store notes
+        notes = None if text.lower() == 'skip' else text
+        current_receipt['notes'] = notes
+        
+        # Update expense data with all collected info
+        expense_data['category'] = current_receipt.get('category')
+        expense_data['is_reimbursable'] = current_receipt.get('is_reimbursable')
+        expense_data['project_name'] = current_receipt.get('project')
         expense_data['notes'] = notes
-
-        # CHECK FOR DUPLICATES BEFORE SAVING
+        
+        # Save to Firebase
+        save_result = firebase_client.save_telegram_receipt(
+            expense_data,
+            telegram_user_id=str(user_id)
+        )
+        
+        if not save_result.get('success'):
+            await update.message.reply_text("❌ Failed to save. Please try again.")
+            return ConversationHandler.END
+        
+        # Show completion message
         merchant = expense_data.get('merchant_name', 'Unknown')
         amount = expense_data.get('total_amount', 0)
-        date = expense_data.get('date')
+        currency = expense_data.get('currency', 'INR')
+        category = current_receipt.get('category')
+        is_reimbursable = current_receipt.get('is_reimbursable')
+        project = current_receipt.get('project')
         
-        duplicate_check = firebase_client.check_duplicate_receipt(
-            merchant=merchant,
-            amount=amount,
-            date=date,
-            telegram_user_id=str(user_id)
-        )
-        
-        if duplicate_check['is_duplicate']:
-            existing = duplicate_check['existing_receipt']
-            existing_date = existing.get('created_at')
-            
-            # Format timestamp
-            if existing_date:
-                from datetime import datetime
-                if hasattr(existing_date, 'timestamp'):
-                    uploaded_date = datetime.fromtimestamp(existing_date.timestamp()).strftime('%b %d, %Y at %I:%M %p')
-                else:
-                    uploaded_date = "recently"
-            else:
-                uploaded_date = "previously"
-            
-            duplicate_msg = f"""
-⚠️ **Duplicate Receipt Detected!**
-
-🏪 Merchant: {merchant}
-💰 Amount: {expense_data.get('currency', 'INR')} {amount}
-📅 Date: {date}
-
-❌ This receipt was already uploaded on {uploaded_date}
-
-Details of existing receipt:
-🏢 Company/Project: {existing.get('company_project', 'N/A')}
-💼 Type: {existing.get('expense_type', 'N/A')}
-📝 Notes: {existing.get('notes', 'None')}
-
-**Not saving duplicate.** Send a different receipt.
-"""
-            await update.message.reply_text(duplicate_msg, parse_mode='Markdown')
-            logger.info(f"⚠️ Duplicate prevented: {merchant} - {amount}")
-            
-            # Remove from queue and check for next receipt
-            pending_receipt_queues[user_id].pop(0)
-            
-            if pending_receipt_queues[user_id]:
-                next_receipt = pending_receipt_queues[user_id][0]
-                merchant_next = next_receipt.get('merchant_name', 'Unknown')
-                amount_next = next_receipt.get('total_amount', 0)
-                currency_next = next_receipt.get('currency', 'INR')
-                
-                await update.message.reply_text(
-                    f"📋 **Next receipt in queue:**\n\n"
-                    f"🏪 {merchant_next}\n💰 {currency_next} {amount_next}\n\n"
-                    f"Please provide details"
-                )
-                return WAITING_FOR_DETAILS
-            else:
-                del pending_receipt_queues[user_id]
-                return ConversationHandler.END
-        
-        # If not duplicate, save to Firebase
-        save_result = firebase_client.save_telegram_receipt(
-            expense_data, 
-            telegram_user_id=str(user_id)
-        )
-
-
-        if save_result.get('success'):
-            merchant = expense_data.get('merchant_name', 'Unknown')
-            amount = expense_data.get('total_amount', 0)
-            currency = expense_data.get('currency', 'INR')
-            
-            confirmation_msg = f"""
-✅ **Expense Saved!**
-
-🏪 Merchant: {merchant}
-💰 Amount: {currency} {amount}
-🏢 Company/Project: {company_project}
-💼 Type: {expense_type.capitalize()}
-"""
-            if notes:
-                confirmation_msg += f"📝 Notes: {notes}"
-
-            await update.message.reply_text(confirmation_msg, parse_mode='Markdown')
-            logger.info(f"✅ Saved expense: {merchant} - {currency} {amount} ({company_project}, {expense_type})")
+        if notes:
+            message = f"📝 Notes added!\n\n"
         else:
-            await update.message.reply_text("❌ Failed to save expense. Please try again.")
-
-        # Remove from queue
+            message = ""
+        
+        message += (
+    f"✅ "
+    f"{'Receipt Complete' if len(pending_receipt_queues[user_id]) == 1 else 'Receipt ' + str(user_states[user_id].get('processed_count', 0) + 1) + ' Complete'}:\n"
+)
+        message += f"🏪 {merchant}\n"
+        message += f"💰 {currency} {amount}\n"
+        
+        if category == 'Personal':
+            message += f"📂 Personal\n"
+        else:
+            message += f"📂 Business - {'Reimbursable' if is_reimbursable else 'Company expense'}\n"
+            if project:
+                message += f"🏢 {project}\n"
+        
+        if notes:
+            message += f"📝 {notes}\n"
+        
+        # Track processed count
+        if 'processed_count' not in user_states[user_id]:
+            user_states[user_id]['processed_count'] = 0
+        user_states[user_id]['processed_count'] += 1
+        
+        # Remove completed receipt from queue
         pending_receipt_queues[user_id].pop(0)
         
         # Check if more receipts in queue
-        if pending_receipt_queues[user_id]:
-            next_receipt = pending_receipt_queues[user_id][0]
-            merchant = next_receipt.get('merchant_name', 'Unknown')
-            amount = next_receipt.get('total_amount', 0)
-            currency = next_receipt.get('currency', 'INR')
+        if len(pending_receipt_queues[user_id]) > 0:
+            message += "\n\n───────────────────────\n"
+            await update.message.reply_text(message)
             
-            await update.message.reply_text(
-                f"📋 **Next receipt in queue:**\n\n"
-                f"🏪 {merchant}\n💰 {currency} {amount}\n\n"
-                f"Please provide details (any format works!)"
-            )
-            return WAITING_FOR_DETAILS
+            # Process next receipt
+            await ask_category_for_current_receipt(update, context, user_id)
+            return user_states[user_id].get('state', WAITING_FOR_CATEGORY)
+            
         else:
-            # No more receipts
+            # All receipts processed - show summary if multiple
+            processed_count = user_states[user_id].get('processed_count', 1)
+            
+            if processed_count > 1:
+                message += "\n\n═══════════════════════\n\n"
+                message += f"🎉 All {processed_count} receipts processed!\n\n"
+                message += "Send more receipts anytime! 📸"
+            else:
+                message += "\n\nSend more receipts anytime! 📸"
+            
+            await update.message.reply_text(message)
+            
+            # Cleanup
             del pending_receipt_queues[user_id]
-            await update.message.reply_text("🎉 All receipts processed! Send more anytime.")
+            user_states[user_id] = {'last_project': user_states[user_id].get('last_project')}
+            
             return ConversationHandler.END
-
+            
     except Exception as e:
-        logger.error(f"❌ Error handling details: {e}")
-        await update.message.reply_text("❌ Error processing your details. Please try again.")
+        logger.error(f"❌ Error handling notes: {e}")
+        await update.message.reply_text("❌ Error saving. Please try again.")
         return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel the conversation"""
     user_id = update.effective_user.id
+    
     if user_id in pending_receipt_queues:
         count = len(pending_receipt_queues[user_id])
         del pending_receipt_queues[user_id]
         await update.message.reply_text(
-            f"❌ Cancelled. {count} pending receipt(s) cleared. Send new receipts to start again."
+            f"❌ Cancelled. {count} pending receipt(s) cleared.\n\nSend new receipts to start again."
         )
     else:
-        await update.message.reply_text("❌ No pending receipts. Send a receipt to start!")
+        await update.message.reply_text("❌ No pending receipts.\n\nSend a receipt to start!")
+    
+    if user_id in user_states:
+        user_states[user_id] = {'last_project': user_states[user_id].get('last_project')}
     
     return ConversationHandler.END
 
@@ -536,7 +561,6 @@ def webhook():
 
 async def run_bot_loop():
     """Run the bot's event loop"""
-    # Keep the loop running forever
     while True:
         await asyncio.sleep(1)
 
@@ -571,10 +595,12 @@ def init_bot():
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.PHOTO, handle_photo),
-            MessageHandler(filters.Document.ALL, handle_document)
         ],
         states={
-            WAITING_FOR_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_details)]
+            WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
+            WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
+            WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
+            WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)]
         },
         fallbacks=[CommandHandler('cancel', cancel)],
         per_user=True,

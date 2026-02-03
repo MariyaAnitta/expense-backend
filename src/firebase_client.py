@@ -137,34 +137,56 @@ class FirebaseClient:
     
     def save_telegram_receipt(self, expense_data, telegram_user_id=None):
         """
-        Save Telegram receipt expense to Firestore
+        Save Telegram receipt expense to Firestore with new Personal/Business structure
         """
         try:
+            # Get category and sub-category info
+            category = expense_data.get('category', 'Personal')  # 'Personal' or 'Business'
+            is_reimbursable = expense_data.get('is_reimbursable', False)
+            
+            # Determine the full category string for display
+            if category == 'Personal':
+                full_category = 'Personal'
+            else:
+                full_category = 'Business - Reimbursable' if is_reimbursable else 'Business - Company expense'
+            
             receipt_data = {
+                # Basic info
                 'merchant': expense_data.get('merchant_name', 'Unknown'),
                 'amount': float(expense_data.get('total_amount', 0)),
                 'currency': expense_data.get('currency', 'INR'),
                 'date': expense_data.get('date'),
-                'category': expense_data.get('category', 'Other'),
                 'source': 'telegram',
+                
+                # New category structure
+                'category': category,  # 'Personal' or 'Business'
+                'full_category': full_category,  # Display string
+                
+                # Business-specific fields
+                'is_reimbursable': is_reimbursable if category == 'Business' else None,
+                'project_name': expense_data.get('project_name') if category == 'Business' else None,
+                
+                # Detailed info
                 'items': expense_data.get('items', []),
-                'payment_method': expense_data.get('payment_method'),
                 'tax_amount': expense_data.get('tax_amount'),
+                'payment_method': expense_data.get('payment_method'),
+                
+                # Metadata
                 'telegram_user_id': telegram_user_id,
                 'file_path': expense_data.get('file_path'),
                 'confidence': 0.90,
-                'company_project': expense_data.get('company_project'),
-                'expense_type': expense_data.get('expense_type'),
                 'notes': expense_data.get('notes'),
                 'created_at': firestore.SERVER_TIMESTAMP
             }
             
+            # Remove None values
             receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
             
+            # Save to Firestore
             doc_ref = self.db.collection('telegram_receipts').add(receipt_data)
             expense_id = doc_ref[1].id
             
-            print(f"✅ Saved Telegram receipt: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")
+            print(f"✅ Saved Telegram receipt: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']} ({full_category})")
             
             return {'success': True, 'expense_id': expense_id}
             
@@ -233,4 +255,64 @@ class FirebaseClient:
             return None
         except Exception as e:
             print(f"❌ Error getting last timestamp: {e}")
+            return None
+    
+    def get_monthly_summary(self, telegram_user_id, year, month):
+        """
+        Get monthly summary for a user
+        Returns breakdown by Personal and Business categories
+        """
+        try:
+            # Query receipts for the month
+            start_date = f"{year}-{month:02d}-01"
+            if month == 12:
+                end_date = f"{year + 1}-01-01"
+            else:
+                end_date = f"{year}-{month + 1:02d}-01"
+            
+            docs = self.db.collection('telegram_receipts') \
+                .where('telegram_user_id', '==', telegram_user_id) \
+                .where('date', '>=', start_date) \
+                .where('date', '<', end_date) \
+                .stream()
+            
+            receipts = [doc.to_dict() for doc in docs]
+            
+            # Categorize
+            personal_total = 0
+            business_reimbursable_total = 0
+            business_company_total = 0
+            personal_count = 0
+            business_count = 0
+            
+            for receipt in receipts:
+                amount = receipt.get('amount', 0)
+                category = receipt.get('category', 'Personal')
+                
+                if category == 'Personal':
+                    personal_total += amount
+                    personal_count += 1
+                else:
+                    business_count += 1
+                    if receipt.get('is_reimbursable'):
+                        business_reimbursable_total += amount
+                    else:
+                        business_company_total += amount
+            
+            return {
+                'personal': {
+                    'count': personal_count,
+                    'total': personal_total
+                },
+                'business': {
+                    'count': business_count,
+                    'reimbursable': business_reimbursable_total,
+                    'company_expense': business_company_total,
+                    'total': business_reimbursable_total + business_company_total
+                },
+                'grand_total': personal_total + business_reimbursable_total + business_company_total
+            }
+            
+        except Exception as e:
+            print(f"❌ Error getting monthly summary: {e}")
             return None
