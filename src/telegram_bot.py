@@ -454,14 +454,9 @@ def webhook():
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         
-        # Create new event loop for this request
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            loop.run_until_complete(application.process_update(update))
-        finally:
-            loop.close()
+        # Don't create a new loop - reuse the existing one
+        # Just run the update processing
+        asyncio.run(application.process_update(update))
         
         return jsonify({"ok": True}), 200
     except Exception as e:
