@@ -44,19 +44,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = """
 👋 Welcome to ExpenseFlow Bot!
 
-Send me receipt photos or documents and I'll automatically:
-✅ Extract expense details using AI
-✅ Ask if it's Personal or Business
-✅ Track reimbursements for Business expenses
-✅ Save to your expense tracker
+Send me receipt photos or documents 
 
-**How to use:**
+How to use:
 1️⃣ Send receipt photo(s)
 2️⃣ Reply: P (Personal) or B (Business)
 3️⃣ For Business: Answer reimbursement & project questions
 4️⃣ Add notes or skip
 
-**You can send multiple receipts at once!**
+You can send multiple receipts at once!
 
 Just send a photo to get started! 📸
 """
