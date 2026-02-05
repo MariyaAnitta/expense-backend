@@ -519,7 +519,7 @@ def run_async_loop():
 
 def init_bot():
     """Initialize the Telegram bot with webhook"""
-    global application, bot_loop, bot_thread
+    global application, bot_loop, bot_thread  # MUST be first executable line
     
     # Thread-safe initialization
     with init_lock:
@@ -536,7 +536,11 @@ def init_bot():
         
         try:
             # Start dedicated event loop in background thread
-            bot_thread = Thread(target=run_async_loop, daemon=True, name="BotEventLoop")
+            bot_thread = Thread(
+                target=run_async_loop,
+                daemon=True,
+                name="BotEventLoop"
+            )
             bot_thread.start()
             
             # Wait for loop to be ready
@@ -552,8 +556,7 @@ def init_bot():
             
             logger.info("✅ Event loop ready")
             
-            # Build application
-            global application 
+            # Build application (NO global here)
             application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
             
             # Initialize application in bot's event loop
@@ -571,22 +574,31 @@ def init_bot():
                     MessageHandler(filters.PHOTO, handle_photo),
                 ],
                 states={
-                    WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
-                    WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
-                    WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
-                    WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
+                    WAITING_FOR_CATEGORY: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)
+                    ],
+                    WAITING_FOR_REIMBURSEMENT: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)
+                    ],
+                    WAITING_FOR_PROJECT: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)
+                    ],
+                    WAITING_FOR_NOTES: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)
+                    ],
                 },
                 fallbacks=[CommandHandler('cancel', cancel)],
                 per_user=True,
                 per_chat=True
             )
             
-            # Add handlers - /start MUST be added
+            # Add handlers
             application.add_handler(CommandHandler("start", start_command))
             application.add_handler(conv_handler)
             
             logger.info("✅ Handlers registered")
             logger.info(f"🔧 Total handlers added: {len(application.handlers)}")
+            
             # Set webhook
             webhook_url = f"{WEBHOOK_URL}/webhook"
             future = asyncio.run_coroutine_threadsafe(
@@ -601,6 +613,7 @@ def init_bot():
         except Exception as e:
             logger.error(f"❌ Failed to initialize bot: {e}", exc_info=True)
             raise
+
 
 
 def start_flask_server():
