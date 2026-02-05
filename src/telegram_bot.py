@@ -592,9 +592,9 @@ def init_bot():
                 per_chat=True
             )
             
-            # Add handlers
-            application.add_handler(CommandHandler("start", start_command))
+            # Add handlers - CONV HANDLER FIRST!
             application.add_handler(conv_handler)
+            application.add_handler(CommandHandler("start", start_command))
             
             logger.info("✅ Handlers registered")
             logger.info(f"🔧 Total handlers added: {len(application.handlers)}")
