@@ -453,7 +453,7 @@ def webhook():
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         
-        # Put update in queue for bot loop to process
+        # Schedule update processing in bot's event loop (thread-safe)
         asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             bot_loop
@@ -463,6 +463,7 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 
 async def run_bot_loop():
@@ -476,12 +477,12 @@ def start_bot_loop():
     global bot_loop
     bot_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(bot_loop)
-    bot_loop.run_until_complete(run_bot_loop())
+    bot_loop.run_forever() 
 
 
 def init_bot():
     """Initialize the bot application"""
-    global application
+    global application, bot_loop
     
     if not TELEGRAM_BOT_TOKEN:
         logger.error("❌ TELEGRAM_BOT_TOKEN not found!")
@@ -489,13 +490,24 @@ def init_bot():
     
     logger.info("🤖 Initializing Telegram bot with webhook...")
     
+    # Start bot event loop FIRST in background thread
+    loop_thread = Thread(target=start_bot_loop, daemon=True)
+    loop_thread.start()
+    
+    # Wait a bit for loop to be ready
+    import time
+    time.sleep(0.5)
+    
+    # Build application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.initialize())
+    # Initialize in the bot's loop
+    asyncio.run_coroutine_threadsafe(
+        application.initialize(),
+        bot_loop
+    ).result(timeout=10)
     
-    # Create conversation handler with new states
+    # Create conversation handler
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.PHOTO, handle_photo),
@@ -515,13 +527,14 @@ def init_bot():
     application.add_handler(conv_handler)
     
     webhook_url = f"{WEBHOOK_URL}/webhook"
-    loop.run_until_complete(application.bot.set_webhook(webhook_url))
+    asyncio.run_coroutine_threadsafe(
+        application.bot.set_webhook(webhook_url),
+        bot_loop
+    ).result(timeout=10)
+    
     logger.info(f"✅ Webhook set to: {webhook_url}")
-    
-    # Start bot event loop in background thread
-    Thread(target=start_bot_loop, daemon=True).start()
-    
     logger.info("✅ Telegram bot initialized with webhook!")
+
 
 
 def start_flask_server():
