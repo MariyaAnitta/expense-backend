@@ -454,6 +454,11 @@ def webhook():
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         
+        # Check if bot_loop is ready
+        if bot_loop is None:
+            logger.error("❌ bot_loop is None!")
+            return jsonify({"ok": False, "error": "Bot not initialized"}), 500
+        
         # Use the persistent bot_loop from initialization
         future = asyncio.run_coroutine_threadsafe(
             application.process_update(update),
@@ -463,8 +468,9 @@ def webhook():
         
         return jsonify({"ok": True}), 200
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"Webhook error: {str(e)}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 
 
@@ -509,7 +515,7 @@ def init_bot():
     
     # Wait for loop to be ready
     import time
-    time.sleep(0.5)
+    time.sleep(2)
     
     # Build application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
