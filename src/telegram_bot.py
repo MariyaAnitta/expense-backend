@@ -10,6 +10,7 @@ from flask import Flask, request, jsonify
 import asyncio
 from threading import Thread
 from queue import Queue
+import nest_asyncio
 
 load_dotenv()
 
@@ -482,6 +483,8 @@ def webhook():
 #     bot_loop.run_forever()
 
 
+import nest_asyncio
+
 def init_bot():
     """Initialize the bot application"""
     global application
@@ -491,6 +494,9 @@ def init_bot():
         return
     
     logger.info("🤖 Initializing Telegram bot with webhook...")
+    
+    # Allow nested event loops
+    nest_asyncio.apply()
     
     # Build application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
