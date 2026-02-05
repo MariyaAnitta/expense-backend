@@ -593,10 +593,11 @@ def init_bot():
             )
             
             # Add handlers - CONV HANDLER FIRST!
-            application.add_handler(conv_handler)  # NEW - CORRECT
+            application.add_handler(conv_handler)
             application.add_handler(CommandHandler("start", start_command))
             
             logger.info("✅ Handlers registered")
+            logger.info("🔥 FIXED VERSION DEPLOYED - FEB 5 2026 v2")
             logger.info(f"🔧 Total handlers added: {len(application.handlers)}")
             
             # Set webhook
