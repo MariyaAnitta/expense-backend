@@ -459,13 +459,13 @@ def webhook():
             logger.error("❌ bot_loop is None!")
             return jsonify({"ok": False, "error": "Bot not initialized"}), 500
         
-        # Use the persistent bot_loop from initialization
-        future = asyncio.run_coroutine_threadsafe(
+        # Schedule update processing (DON'T WAIT for result)
+        asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             bot_loop
         )
-        future.result(timeout=30)  # Wait for completion
         
+        # Return immediately - Telegram expects fast response
         return jsonify({"ok": True}), 200
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}", exc_info=True)
