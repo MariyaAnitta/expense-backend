@@ -12,5 +12,5 @@ gunicorn==21.2.0
 firebase-admin==6.5.0
 python-telegram-bot==21.9
 nest-asyncio
-gevent
+
 google-generativeai
