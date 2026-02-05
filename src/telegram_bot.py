@@ -45,6 +45,7 @@ user_expense_data = {}  # Store current expense being processed
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
+    logger.info(f"🎯 /start command received from user {update.effective_user.id}")
     welcome_message = """
 👋 Welcome to ExpenseFlow Bot!
 
@@ -61,6 +62,7 @@ You can send multiple receipts at once!
 Just send a photo to get started! 📸
 """
     await update.message.reply_text(welcome_message)
+    logger.info("✅ Welcome message sent")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -166,6 +168,7 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         user_message = update.message.text.strip().lower()
+        logger.info(f"📝 Category response from {user_id}: {user_message}")
         
         if user_id not in user_expense_data:
             await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
@@ -227,6 +230,7 @@ async def handle_reimbursement(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         user_id = update.effective_user.id
         user_message = update.message.text.strip().lower()
+        logger.info(f"💼 Reimbursement response from {user_id}: {user_message}")
         
         if user_id not in user_expense_data:
             await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
@@ -265,6 +269,7 @@ async def handle_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         user_message = update.message.text.strip()
+        logger.info(f"🏢 Project response from {user_id}: {user_message}")
         
         if user_id not in user_expense_data:
             await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
@@ -309,6 +314,7 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
         user_message = update.message.text.strip()
+        logger.info(f"📝 Notes response from {user_id}: {user_message[:50]}...")
         
         if user_id not in user_expense_data:
             await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
@@ -424,6 +430,7 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel the conversation"""
     user_id = update.effective_user.id
+    logger.info(f"❌ Cancel command from {user_id}")
     if user_id in pending_receipt_queues:
         count = len(pending_receipt_queues[user_id])
         del pending_receipt_queues[user_id]
@@ -458,13 +465,31 @@ def webhook():
         
         # Parse update
         json_data = request.get_json(force=True)
+        
+        # Log incoming update for debugging
+        logger.info(f"📨 Webhook received: {json_data.get('update_id', 'unknown')}")
+        
+        # Log message type
+        if 'message' in json_data:
+            msg = json_data['message']
+            if 'text' in msg:
+                logger.info(f"💬 Text message: {msg['text']}")
+            elif 'photo' in msg:
+                logger.info(f"📸 Photo message")
+        
         update = Update.de_json(json_data, application.bot)
         
         # Schedule update processing in bot's event loop
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             bot_loop
         )
+        
+        # Wait briefly to catch immediate errors (but don't block Telegram)
+        try:
+            future.result(timeout=0.1)
+        except:
+            pass  # Ignore timeout - processing continues in background
         
         # Return immediately - Telegram expects fast response
         return jsonify({"ok": True}), 200
@@ -553,9 +578,11 @@ def init_bot():
                 per_chat=True
             )
             
-            # Add handlers
+            # Add handlers - /start MUST be added
             application.add_handler(CommandHandler("start", start_command))
             application.add_handler(conv_handler)
+            
+            logger.info("✅ Handlers registered")
             
             # Set webhook
             webhook_url = f"{WEBHOOK_URL}/webhook"
