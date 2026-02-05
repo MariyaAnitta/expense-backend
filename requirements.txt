@@ -13,5 +13,4 @@ firebase-admin==6.5.0
 python-telegram-bot==21.9
 nest-asyncio
 gevent
-numpy
 google-generativeai
