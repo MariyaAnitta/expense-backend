@@ -8,13 +8,15 @@ from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 from flask import Flask, request, jsonify
 import asyncio
-from threading import Thread
-from queue import Queue
-import nest_asyncio
+from threading import Thread, Lock
+from datetime import datetime
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,10 +29,11 @@ firebase_client = FirebaseClient()
 # Create Flask app for webhook
 app = Flask(__name__)
 
-# Initialize bot application
+# Global bot state
 application = None
 bot_loop = None
-#update_queue = Queue()
+bot_thread = None
+init_lock = Lock()
 
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES = range(4)
@@ -106,7 +109,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return WAITING_FOR_CATEGORY
 
     except Exception as e:
-        logger.error(f"❌ Error handling photo: {e}")
+        logger.error(f"❌ Error handling photo: {e}", exc_info=True)
         await update.message.reply_text("❌ Sorry, there was an error processing your receipt. Please try again.")
         return ConversationHandler.END
 
@@ -214,7 +217,7 @@ Reply:
             return WAITING_FOR_CATEGORY
             
     except Exception as e:
-        logger.error(f"❌ Error handling category: {e}")
+        logger.error(f"❌ Error handling category: {e}", exc_info=True)
         await update.message.reply_text("❌ Error processing. Please try again.")
         return ConversationHandler.END
 
@@ -226,47 +229,45 @@ async def handle_reimbursement(update: Update, context: ContextTypes.DEFAULT_TYP
         user_message = update.message.text.strip().lower()
         
         if user_id not in user_expense_data:
-            await update.message.reply_text("⚠️ No pending receipt.")
+            await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
             return ConversationHandler.END
         
         expense_data = user_expense_data[user_id]
         
-        if user_message in ['y', 'yes']:
+        if user_message in ['yes', 'y']:
             expense_data['reimbursement_status'] = 'Pending'
-            expense_data['paid_by'] = 'Employee'
-        elif user_message in ['n', 'no']:
-            expense_data['reimbursement_status'] = 'Not Needed'
-            expense_data['paid_by'] = 'Company'
+            status_text = "Reimbursable"
+        elif user_message in ['no', 'n']:
+            expense_data['reimbursement_status'] = 'Not Applicable'
+            status_text = "Company Expense"
         else:
-            await update.message.reply_text("⚠️ Please reply with Y (Yes) or N (No)")
+            await update.message.reply_text("⚠️ Please reply with Yes/Y or No/N")
             return WAITING_FOR_REIMBURSEMENT
         
         # Ask for project
-        project_prompt = """🏢 Which client/project is this for?
+        project_prompt = f"""💼 {status_text}
 
-Examples:
-- 10xDS
-- Acme Corp
-- Internal
-- Type 'skip' to save without project"""
+Which project or department?
+
+Reply with project name or type 'skip'"""
         
         await update.message.reply_text(project_prompt)
         return WAITING_FOR_PROJECT
         
     except Exception as e:
-        logger.error(f"❌ Error handling reimbursement: {e}")
+        logger.error(f"❌ Error handling reimbursement: {e}", exc_info=True)
         await update.message.reply_text("❌ Error processing. Please try again.")
         return ConversationHandler.END
 
 
 async def handle_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle project/client name"""
+    """Handle project/department question"""
     try:
         user_id = update.effective_user.id
         user_message = update.message.text.strip()
         
         if user_id not in user_expense_data:
-            await update.message.reply_text("⚠️ No pending receipt.")
+            await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
             return ConversationHandler.END
         
         expense_data = user_expense_data[user_id]
@@ -276,73 +277,68 @@ async def handle_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             expense_data['company_project'] = user_message
         
-        # Show saved confirmation
+        # Ask for notes
         merchant = expense_data.get('merchant_name', 'Unknown')
         amount = expense_data.get('total_amount', 0)
         currency = expense_data.get('currency', 'INR')
-        date = expense_data.get('date', 'Unknown')
         reimbursement = expense_data.get('reimbursement_status')
         project = expense_data.get('company_project')
         
         reimbursement_text = "Reimbursable" if reimbursement == 'Pending' else "Company Expense"
         
-        confirmation_msg = f"""✅ Expense Saved!
+        notes_prompt = f"""✅ Business Expense Set!
 
 🏪 Merchant: {merchant.upper()}
 💰 Amount: {currency} {amount}
-📅 Date: {date}
 📂 Category: Business - {reimbursement_text}
 🏢 Project: {project}
 
-Want to add notes? Reply or type 'done'"""
+Want to add notes? Reply with text or type 'done'"""
         
-        await update.message.reply_text(confirmation_msg)
+        await update.message.reply_text(notes_prompt)
         return WAITING_FOR_NOTES
         
     except Exception as e:
-        logger.error(f"❌ Error handling project: {e}")
+        logger.error(f"❌ Error handling project: {e}", exc_info=True)
         await update.message.reply_text("❌ Error processing. Please try again.")
         return ConversationHandler.END
 
 
 async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle notes (final step)"""
+    """Handle notes and finalize expense"""
     try:
         user_id = update.effective_user.id
         user_message = update.message.text.strip()
         
         if user_id not in user_expense_data:
-            await update.message.reply_text("⚠️ No pending receipt.")
+            await update.message.reply_text("⚠️ No pending receipt. Please send a new receipt photo.")
             return ConversationHandler.END
         
         expense_data = user_expense_data[user_id]
         
-        # Add notes (or skip)
-        if user_message.lower() not in ['done', 'skip']:
-            expense_data['notes'] = user_message
-            notes_text = user_message
-        else:
-            expense_data['notes'] = None
+        # Handle notes
+        if user_message.lower() == 'done':
             notes_text = "-"
+        else:
+            notes_text = user_message
+            expense_data['notes'] = notes_text
         
-        # CHECK FOR DUPLICATES
         merchant = expense_data.get('merchant_name', 'Unknown')
         amount = expense_data.get('total_amount', 0)
-        date = expense_data.get('date')
         currency = expense_data.get('currency', 'INR')
+        date = expense_data.get('date', 'Unknown')
         
-        duplicate_check = firebase_client.check_duplicate_receipt(
+        # Check for duplicate
+        is_duplicate, existing_date = firebase_client.check_duplicate_receipt(
+            telegram_user_id=str(user_id),
             merchant=merchant,
             amount=amount,
-            date=date,
-            telegram_user_id=str(user_id)
+            date=date
         )
         
-        if duplicate_check['is_duplicate']:
-            existing = duplicate_check['existing_receipt']
-            existing_date = existing.get('created_at')
-            
-            from datetime import datetime
+        if is_duplicate:
+            # Format date
+            uploaded_date = "recently"
             if existing_date and hasattr(existing_date, 'timestamp'):
                 uploaded_date = datetime.fromtimestamp(existing_date.timestamp()).strftime('%b %d, %Y at %I:%M %p')
             else:
@@ -382,7 +378,7 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     final_msg = f"""📝 Notes added!
 
 ✅ Final expense:
-🏪 {merchant.UPPER()}
+🏪 {merchant.upper()}
 💰 {currency} {amount}
 📂 {category_text}"""
                     if main_category == 'Business':
@@ -420,7 +416,7 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         
     except Exception as e:
-        logger.error(f"❌ Error handling notes: {e}")
+        logger.error(f"❌ Error handling notes: {e}", exc_info=True)
         await update.message.reply_text("❌ Error processing. Please try again.")
         return ConversationHandler.END
 
@@ -441,6 +437,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# =====================================================================
+# FLASK ROUTES
+# =====================================================================
+
 @app.route('/')
 def health_check():
     """Health check endpoint for Render"""
@@ -451,15 +451,16 @@ def health_check():
 def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
+        # Ensure bot is initialized
+        if application is None or bot_loop is None:
+            logger.error("❌ Bot not initialized!")
+            return jsonify({"ok": False, "error": "Bot not initialized"}), 500
+        
+        # Parse update
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         
-        # Check if bot_loop is ready
-        if bot_loop is None:
-            logger.error("❌ bot_loop is None!")
-            return jsonify({"ok": False, "error": "Bot not initialized"}), 500
-        
-        # Schedule update processing (DON'T WAIT for result)
+        # Schedule update processing in bot's event loop
         asyncio.run_coroutine_threadsafe(
             application.process_update(update),
             bot_loop
@@ -467,97 +468,109 @@ def webhook():
         
         # Return immediately - Telegram expects fast response
         return jsonify({"ok": True}), 200
+        
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}", exc_info=True)
+        logger.error(f"❌ Webhook error: {e}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# =====================================================================
+# BOT INITIALIZATION
+# =====================================================================
 
-
-# async def run_bot_loop():
-#     """Run the bot's event loop - keeps it alive"""
-#     while True:
-#         await asyncio.sleep(3600) 
-#
-#
-#
-# def start_bot_loop():
-#     """Start bot event loop in background thread"""
-#     global bot_loop
-#     bot_loop = asyncio.new_event_loop()
-#     asyncio.set_event_loop(bot_loop)
-#     bot_loop.run_forever()
-
-
-import nest_asyncio
-
-def init_bot():
-    """Initialize the bot application"""
-    global application, bot_loop
-    
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN not found!")
-        return
-    
-    logger.info("🤖 Initializing Telegram bot with webhook...")
-    
-    # Create persistent event loop in background thread
-    def run_async_loop():
-        global bot_loop
+def run_async_loop():
+    """Run asyncio event loop in dedicated thread"""
+    global bot_loop
+    try:
         bot_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(bot_loop)
+        logger.info("🔄 Bot event loop started")
         bot_loop.run_forever()
-    
-    # Start background thread
-    from threading import Thread
-    thread = Thread(target=run_async_loop, daemon=True)
-    thread.start()
-    
-    # Wait for loop to be ready
-    import time
-    time.sleep(2)
-    
-    # Build application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Initialize in the bot's loop
-    future = asyncio.run_coroutine_threadsafe(
-        application.initialize(),
-        bot_loop
-    )
-    future.result(timeout=10)
-    
-    # Create conversation handler
-    conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.PHOTO, handle_photo),
-        ],
-        states={
-            WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
-            WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
-            WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
-            WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-        per_user=True,
-        per_chat=True
-    )
-    
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(conv_handler)
-    
-    webhook_url = f"{WEBHOOK_URL}/webhook"
-    future = asyncio.run_coroutine_threadsafe(
-        application.bot.set_webhook(webhook_url),
-        bot_loop
-    )
-    future.result(timeout=10)
-    
-    logger.info(f"✅ Webhook set to: {webhook_url}")
-    logger.info("✅ Telegram bot initialized with webhook!")
+    except Exception as e:
+        logger.error(f"❌ Event loop error: {e}", exc_info=True)
 
 
-
+def init_bot():
+    """Initialize the Telegram bot with webhook"""
+    global application, bot_loop, bot_thread
+    
+    # Thread-safe initialization
+    with init_lock:
+        # Only initialize once
+        if application is not None:
+            logger.info("⚠️ Bot already initialized, skipping...")
+            return
+        
+        if not TELEGRAM_BOT_TOKEN:
+            logger.error("❌ TELEGRAM_BOT_TOKEN not found!")
+            return
+        
+        logger.info("🤖 Initializing Telegram bot with webhook...")
+        
+        try:
+            # Start dedicated event loop in background thread
+            bot_thread = Thread(target=run_async_loop, daemon=True, name="BotEventLoop")
+            bot_thread.start()
+            
+            # Wait for loop to be ready
+            import time
+            max_wait = 10
+            waited = 0
+            while bot_loop is None and waited < max_wait:
+                time.sleep(0.5)
+                waited += 0.5
+            
+            if bot_loop is None:
+                raise RuntimeError("Failed to initialize bot event loop")
+            
+            logger.info("✅ Event loop ready")
+            
+            # Build application
+            application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            
+            # Initialize application in bot's event loop
+            future = asyncio.run_coroutine_threadsafe(
+                application.initialize(),
+                bot_loop
+            )
+            future.result(timeout=15)
+            
+            logger.info("✅ Application initialized")
+            
+            # Create conversation handler
+            conv_handler = ConversationHandler(
+                entry_points=[
+                    MessageHandler(filters.PHOTO, handle_photo),
+                ],
+                states={
+                    WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
+                    WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
+                    WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
+                    WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
+                },
+                fallbacks=[CommandHandler('cancel', cancel)],
+                per_user=True,
+                per_chat=True
+            )
+            
+            # Add handlers
+            application.add_handler(CommandHandler("start", start_command))
+            application.add_handler(conv_handler)
+            
+            # Set webhook
+            webhook_url = f"{WEBHOOK_URL}/webhook"
+            future = asyncio.run_coroutine_threadsafe(
+                application.bot.set_webhook(webhook_url),
+                bot_loop
+            )
+            future.result(timeout=15)
+            
+            logger.info(f"✅ Webhook set to: {webhook_url}")
+            logger.info("✅ Telegram bot initialized successfully!")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize bot: {e}", exc_info=True)
+            raise
 
 
 def start_flask_server():
@@ -566,6 +579,9 @@ def start_flask_server():
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
 
 
+# Initialize bot when module loads (CRITICAL for Gunicorn)
+init_bot()
+
+
 if __name__ == "__main__":
-    init_bot()
     start_flask_server()
