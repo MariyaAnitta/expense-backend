@@ -478,6 +478,8 @@ def webhook():
                 logger.info(f"📸 Photo message")
         
         update = Update.de_json(json_data, application.bot)
+        logger.info(f"🔧 Update object created: {update}")
+        logger.info(f"🔧 Application handlers: {len(application.handlers)}")
         
         # Schedule update processing in bot's event loop
         future = asyncio.run_coroutine_threadsafe(
