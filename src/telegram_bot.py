@@ -553,6 +553,7 @@ def init_bot():
             logger.info("✅ Event loop ready")
             
             # Build application
+            global application 
             application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
             
             # Initialize application in bot's event loop
@@ -585,7 +586,7 @@ def init_bot():
             application.add_handler(conv_handler)
             
             logger.info("✅ Handlers registered")
-            
+            logger.info(f"🔧 Total handlers added: {len(application.handlers)}")
             # Set webhook
             webhook_url = f"{WEBHOOK_URL}/webhook"
             future = asyncio.run_coroutine_threadsafe(
