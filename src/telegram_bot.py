@@ -136,19 +136,37 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     merchant = expense_data.get('merchant_name', 'Unknown')
     amount = expense_data.get('total_amount', 0)
     currency = expense_data.get('currency', 'INR')
+    date = expense_data.get('date')
 
-    save_result = firebase_client.save_telegram_receipt(
-        expense_data,
+    # ✅ DUPLICATE CHECK FIRST
+    duplicate_check = firebase_client.check_duplicate_receipt(
+        merchant=merchant,
+        amount=amount,
+        date=date,
         telegram_user_id=str(user_id)
     )
 
-    if save_result.get('success'):
-        final_msg = f"""✅ Complete!
+    if duplicate_check.get('is_duplicate'):
+        await update.message.reply_text(
+            f"⚠️ Duplicate Receipt!\n\n"
+            f"🏪 {merchant.upper()}\n"
+            f"💰 {currency} {amount}\n"
+            f"📅 {date}\n\n"
+            f"This receipt was already saved."
+        )
+    else:
+        save_result = firebase_client.save_telegram_receipt(
+            expense_data,
+            telegram_user_id=str(user_id)
+        )
+
+        if save_result.get('success'):
+            final_msg = f"""✅ Complete!
 
 🏪 {merchant.upper()}
 💰 {currency} {amount}
 📝 {notes_text}"""
-        await update.message.reply_text(final_msg)
+            await update.message.reply_text(final_msg)
 
     pending_receipt_queues[user_id].pop(0)
     del user_expense_data[user_id]
@@ -216,6 +234,10 @@ def start_flask_server():
     app.run(host="0.0.0.0", port=port)
 
 
+# Auto-initialize bot when module is imported (for Gunicorn/Render)
+init_bot()
+logger.info("✅ Telegram bot initialized and webhook set")
+
+# For local testing only
 if __name__ == "__main__":
-    init_bot()
     start_flask_server()
