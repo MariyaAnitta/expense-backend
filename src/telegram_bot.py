@@ -316,7 +316,6 @@ def init_bot():
 
     application.add_handler(CommandHandler("start", start_command))
 
-    # ✅ FIX: Add ALL state handlers
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
         states={
@@ -329,21 +328,22 @@ def init_bot():
     )
 
     application.add_handler(conv_handler)
-
     loop.run_until_complete(application.bot.set_webhook(f"{WEBHOOK_URL}/webhook"))
-
     Thread(target=start_bot_loop, daemon=True).start()
 
 
-# Auto-initialize bot when module is imported
+# ✅ MOVE THIS OUTSIDE - Make it importable
+def start_flask_server():
+    """Start Flask server for webhook"""
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+
+
+# Auto-initialize bot when module is imported (for Gunicorn/Render)
 init_bot()
 logger.info("✅ Telegram bot initialized and webhook set")
 
 
 # For local testing only
 if __name__ == "__main__":
-    def start_flask_server():
-        port = int(os.getenv("PORT", 10000))
-        app.run(host="0.0.0.0", port=port)
-    
     start_flask_server()
