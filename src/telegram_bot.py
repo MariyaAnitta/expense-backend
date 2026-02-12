@@ -263,15 +263,16 @@ def webhook():
     try:
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
-
-        # Use application's update_queue for proper async handling
-        asyncio.run(application.update_queue.put(update))
-
+        
+        # ✅ Process directly - works with ConversationHandler!
+        asyncio.run(application.process_update(update))
+        
         return jsonify({"ok": True}), 200
-
+    
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return jsonify({"ok": False}), 500
+        logger.error(f"❌ Webhook error: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 async def process_queue():
     """Process updates from queue - keeps ConversationHandler state"""
