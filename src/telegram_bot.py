@@ -1,7 +1,7 @@
 import os
 import logging
 from telegram import Update, Bot
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler , PicklePersistence
 from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
@@ -254,10 +254,18 @@ def health_check():
 
 def build_application():
     """Build application with handlers"""
-    app_instance = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
+    # ✅ Add this line to create the persistence object
+    persistence = PicklePersistence(filepath="bot_state.pickle")
+    
+    app_instance = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .persistence(persistence)  # ✅ Link persistence here
+        .build()
+    )
+    
     app_instance.add_handler(CommandHandler("start", start_command))
-
+    
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
         states={
@@ -266,11 +274,14 @@ def build_application():
             WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
             WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)]
         },
-        fallbacks=[]
+        fallbacks=[],
+        name="receipt_conversation",  # ✅ Ensure this name is set
+        persistent=True               # ✅ Set this to True
     )
-
+    
     app_instance.add_handler(conv_handler)
     return app_instance
+
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
