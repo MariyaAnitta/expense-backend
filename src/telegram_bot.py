@@ -25,12 +25,9 @@ app = Flask(__name__)
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES = range(4)
 
-# Store pending receipt queues per user - THESE STAY GLOBAL
+# Store pending receipt queues per user
 pending_receipt_queues = {}
 user_expense_data = {}
-
-# ALL YOUR HANDLER FUNCTIONS STAY EXACTLY THE SAME
-# (I'm not repeating them here, but they stay unchanged)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
@@ -255,7 +252,6 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "bot": "ExpenseFlow"}), 200
 
-# 🔥 THE ACTUAL FIX - Build fresh application per request
 def build_application():
     """Build application with handlers"""
     app_instance = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -278,30 +274,21 @@ def build_application():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Handle incoming webhook updates - FIXED VERSION"""
+    """Handle incoming webhook updates"""
     try:
         json_data = request.get_json(force=True)
 
-        # Create new event loop for this request
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         try:
-            # Build fresh application
             application = build_application()
-
-            # Initialize
             loop.run_until_complete(application.initialize())
 
-            # Parse update
             update = Update.de_json(json_data, application.bot)
-
-            # Process update
             loop.run_until_complete(application.process_update(update))
 
-            # Shutdown
             loop.run_until_complete(application.shutdown())
-
         finally:
             loop.close()
 
@@ -312,23 +299,39 @@ def webhook():
         return jsonify({"ok": False}), 500
 
 def init_bot():
-    """Set webhook on startup"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    """Set webhook on startup - with retry"""
+    max_retries = 3
 
-    try:
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        loop.run_until_complete(bot.set_webhook(f"{WEBHOOK_URL}/webhook"))
-        logger.info("✅ Webhook set successfully")
-    finally:
-        loop.close()
+    for attempt in range(max_retries):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                loop.run_until_complete(bot.set_webhook(
+                    f"{WEBHOOK_URL}/webhook",
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=30
+                ))
+                logger.info("✅ Webhook set successfully")
+                return
+            finally:
+                loop.close()
+
+        except Exception as e:
+            logger.warning(f"⚠️ Webhook setup attempt {attempt + 1} failed: {e}")
+            if attempt == max_retries - 1:
+                logger.error("❌ Failed to set webhook after retries. Bot will still work when requests come in.")
+                # Don't crash - webhook can be set later by first request
 
 def start_flask_server():
     """Start Flask server for webhook"""
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
-# Initialize webhook
+# Try to set webhook (but don't crash if it fails)
 init_bot()
 
 if __name__ == "__main__":
