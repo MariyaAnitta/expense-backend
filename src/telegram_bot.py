@@ -1,15 +1,12 @@
 import os
 import logging
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler
 from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 from flask import Flask, request, jsonify
 import asyncio
-
-import nest_asyncio
-nest_asyncio.apply()
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -25,15 +22,15 @@ firebase_client = FirebaseClient()
 # Create Flask app for webhook
 app = Flask(__name__)
 
-# Initialize bot application - GLOBAL AND PERSISTENT
-application = None
-
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES = range(4)
 
-# Store pending receipt queues per user
+# Store pending receipt queues per user - THESE STAY GLOBAL
 pending_receipt_queues = {}
-user_expense_data = {}  # Store current expense being processed
+user_expense_data = {}
+
+# ALL YOUR HANDLER FUNCTIONS STAY EXACTLY THE SAME
+# (I'm not repeating them here, but they stay unchanged)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
@@ -253,53 +250,17 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-# ✅ Health check route
 @app.route('/')
 def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "bot": "ExpenseFlow"}), 200
 
-# 🔥 BEST SOLUTION: Proper async webhook with persistent application
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle incoming webhook updates"""
-    try:
-        json_data = request.get_json(force=True)
-        update = Update.de_json(json_data, application.bot)
-        
-        # ✅ Process directly - works with ConversationHandler!
-        asyncio.run(application.process_update(update))
-        
-        return jsonify({"ok": True}), 200
-    
-    except Exception as e:
-        logger.error(f"❌ Webhook error: {e}", exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
+# 🔥 THE ACTUAL FIX - Build fresh application per request
+def build_application():
+    """Build application with handlers"""
+    app_instance = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-
-async def process_queue():
-    """Process updates from queue - keeps ConversationHandler state"""
-    while True:
-        try:
-            update = await application.update_queue.get()
-            await application.process_update(update)
-        except Exception as e:
-            logger.error(f"Error processing update: {e}")
-
-def init_bot():
-    """Initialize bot and start queue processor"""
-    global application
-
-    # Create application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # Initialize in sync context
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.initialize())
-
-    # Add handlers
-    application.add_handler(CommandHandler("start", start_command))
+    app_instance.add_handler(CommandHandler("start", start_command))
 
     conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
@@ -312,25 +273,63 @@ def init_bot():
         fallbacks=[]
     )
 
-    application.add_handler(conv_handler)
+    app_instance.add_handler(conv_handler)
+    return app_instance
 
-    # Set webhook
-    loop.run_until_complete(application.bot.set_webhook(f"{WEBHOOK_URL}/webhook"))
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming webhook updates - FIXED VERSION"""
+    try:
+        json_data = request.get_json(force=True)
 
-    # Start queue processor in background
-    import threading
-    threading.Thread(target=lambda: asyncio.run(process_queue()), daemon=True).start()
+        # Create new event loop for this request
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-    logger.info("✅ Telegram bot initialized with persistent queue")
+        try:
+            # Build fresh application
+            application = build_application()
+
+            # Initialize
+            loop.run_until_complete(application.initialize())
+
+            # Parse update
+            update = Update.de_json(json_data, application.bot)
+
+            # Process update
+            loop.run_until_complete(application.process_update(update))
+
+            # Shutdown
+            loop.run_until_complete(application.shutdown())
+
+        finally:
+            loop.close()
+
+        return jsonify({"ok": True}), 200
+
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}", exc_info=True)
+        return jsonify({"ok": False}), 500
+
+def init_bot():
+    """Set webhook on startup"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        loop.run_until_complete(bot.set_webhook(f"{WEBHOOK_URL}/webhook"))
+        logger.info("✅ Webhook set successfully")
+    finally:
+        loop.close()
 
 def start_flask_server():
     """Start Flask server for webhook"""
     port = int(os.getenv("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
-# Auto-initialize bot when module is imported
+# Initialize webhook
 init_bot()
-logger.info("✅ Telegram bot initialized and webhook set")
 
 if __name__ == "__main__":
     start_flask_server()
