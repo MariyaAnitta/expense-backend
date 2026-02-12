@@ -8,6 +8,9 @@ from firebase_client import FirebaseClient
 from flask import Flask, request, jsonify
 import asyncio
 
+import nest_asyncio
+nest_asyncio.apply()
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
