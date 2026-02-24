@@ -1,24 +1,21 @@
 import os
 import json
 import base64
-from openai import OpenAI
-from dotenv import load_dotenv
 import logging
+from dotenv import load_dotenv
+import google.generativeai as genai
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ReceiptExtractor:
-    """Extracts expense data from receipt images/PDFs using OpenRouter + Gemini Vision"""
+    """Extracts expense data from receipt images/PDFs using Google Gemini Vision"""
     
     def __init__(self):
-        # Initialize OpenRouter client (same as your email extractor)
-        self.client = OpenAI(
-            api_key=os.getenv('OPENROUTER_API_KEY'),
-            base_url="https://openrouter.ai/api/v1"
-        )
-        self.model = os.getenv('OPENROUTER_MODEL', 'google/gemini-2.0-flash-exp')
+        # Initialize Google Gemini client
+        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+        self.model = genai.GenerativeModel('gemini-2.0-flash')
     
     def encode_image_to_base64(self, file_path: str) -> str:
         """Convert image/PDF to base64 for API"""
@@ -47,12 +44,13 @@ class ReceiptExtractor:
             elif file_extension == 'pdf':
                 mime_type = "application/pdf"
             else:
-                mime_type = "image/jpeg"  # default
+                mime_type = "image/jpeg"
             
-            # Encode image to base64
-            image_base64 = self.encode_image_to_base64(file_path)
+            # Read file bytes
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
             
-            # Prompt for receipt extraction
+            # Prompt
             prompt = """
 You are an expert at extracting expense data from receipts. Analyze this receipt image and extract the following information in JSON format:
 
@@ -76,29 +74,22 @@ Rules:
 - Return ONLY valid JSON, no markdown, no explanation
 """
             
-            # Call OpenRouter API with vision
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            # Call Gemini Vision
+            response = self.model.generate_content(
+                [
+                    prompt,
                     {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{image_base64}"
-                                }
-                            }
-                        ]
+                        "mime_type": mime_type,
+                        "data": file_bytes
                     }
                 ],
-                temperature=0.1,
-                max_tokens=800
+                generation_config={
+                    "temperature": 0.1,
+                    "max_output_tokens": 800,
+                }
             )
             
-            # Parse response
-            result_text = response.choices[0].message.content.strip()
+            result_text = response.text.strip()
             
             # Clean markdown if present
             if result_text.startswith('```'):
@@ -110,7 +101,6 @@ Rules:
             
             logger.info(f"✅ Extracted: {expense_data.get('merchant_name')} - {expense_data.get('currency')} {expense_data.get('total_amount')}")
             
-            # Add metadata
             expense_data['source'] = 'telegram'
             expense_data['file_path'] = file_path
             
@@ -139,13 +129,12 @@ Rules:
             }
 
 if __name__ == "__main__":
-    # Test with the receipt you sent
     extractor = ReceiptExtractor()
-    test_file = "temp/receipt_AgACAgUAAxkBAAMDaXMqWNfvHYNJis05YgyzOPJ2bzYAAvANaxtx_phXAAGt4MPxzCP9AQADAgADeQADOAQ.jpg"
+    test_file = "temp/test.jpg"
     
     if os.path.exists(test_file):
         result = extractor.extract_expense_from_receipt(test_file)
         print("\n📊 Extracted Receipt Data:")
         print(json.dumps(result, indent=2))
     else:
-        print(" No test file found. Send a receipt to your Telegram bot first!")
+        print("No test file found.")

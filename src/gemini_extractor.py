@@ -15,7 +15,7 @@ class TransactionExtractor:
             base_url="https://openrouter.ai/api/v1"
         )
         
-        self.model = os.getenv('OPENROUTER_MODEL', 'google/gemini-2.0-flash-exp')
+        self.model = os.getenv('OPENROUTER_MODEL', 'gemini-2.0-flash')
     
     def extract_transaction(self, email_body, email_subject=""):
         """Extract transaction details from email text"""
