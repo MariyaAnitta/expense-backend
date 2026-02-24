@@ -2,6 +2,9 @@ import os
 import logging
 from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes, ConversationHandler , PicklePersistence
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler # Add this to your imports
+
 from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
@@ -23,7 +26,7 @@ firebase_client = FirebaseClient()
 app = Flask(__name__)
 
 # Conversation states
-WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES = range(4)
+WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES, WAITING_FOR_BANK = range(5)
 
 # Store pending receipt queues per user
 pending_receipt_queues = {}
@@ -184,68 +187,86 @@ async def handle_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_NOTES
 
 async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle notes and save"""
+    """Handle notes and ask for Bank selection"""
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
-
+    
     if user_id not in user_expense_data:
         await update.message.reply_text("⚠️ No pending receipt. Send a new photo.")
         return ConversationHandler.END
-
+    
     expense_data = user_expense_data[user_id]
-
+    
+    # Save notes
     if user_message.lower() not in ['done', 'skip']:
         expense_data['notes'] = user_message
-        notes_text = user_message
     else:
         expense_data['notes'] = None
-        notes_text = "-"
 
+    # CREATE INLINE BUTTONS FOR BANK
+    keyboard = [
+        [
+            InlineKeyboardButton("Amex", callback_data='bank_Amex'),
+            InlineKeyboardButton("Citi", callback_data='bank_Citi'),
+        ],
+        [
+            InlineKeyboardButton("HSBC", callback_data='bank_HSBC'),
+            InlineKeyboardButton("Cash / Other", callback_data='bank_Cash'),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "💳 Which account did you use for this?",
+        reply_markup=reply_markup
+    )
+    return WAITING_FOR_BANK
+async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle bank selection and finally save to Firebase"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    bank_name = query.data.split('_')[1] # Extracts 'Amex', 'Citi', etc.
+    
+    if user_id not in user_expense_data:
+        await query.edit_message_text("⚠️ No pending receipt data found.")
+        return ConversationHandler.END
+    
+    expense_data = user_expense_data[user_id]
+    expense_data['bank'] = bank_name # Add to payload
+    
+    # FINAL SAVE TO FIREBASE
     merchant = expense_data.get('merchant_name', 'Unknown')
     amount = expense_data.get('total_amount', 0)
     currency = expense_data.get('currency', 'INR')
-    date = expense_data.get('date')
-
-    duplicate_check = firebase_client.check_duplicate_receipt(
-        merchant=merchant,
-        amount=amount,
-        date=date,
+    
+    save_result = firebase_client.save_telegram_receipt(
+        expense_data,
         telegram_user_id=str(user_id)
     )
-
-    if duplicate_check.get('is_duplicate'):
-        await update.message.reply_text(
-            f"⚠️ Duplicate Receipt!\n\n"
+    
+    if save_result.get('success'):
+        await query.edit_message_text(
+            f"✅ Complete!\n\n"
             f"🏪 {merchant.upper()}\n"
             f"💰 {currency} {amount}\n"
-            f"📅 {date}\n\n"
-            f"This receipt was already saved."
+            f"💳 Bank: {bank_name}\n"
+            f"📝 Saved to Forensic Audit pool."
         )
-    else:
-        save_result = firebase_client.save_telegram_receipt(
-            expense_data,
-            telegram_user_id=str(user_id)
-        )
-
-        if save_result.get('success'):
-            final_msg = f"""✅ Complete!
-
-🏪 {merchant.upper()}
-💰 {currency} {amount}
-📝 {notes_text}"""
-            await update.message.reply_text(final_msg)
-
+    
+    # Clean up
     pending_receipt_queues[user_id].pop(0)
     del user_expense_data[user_id]
-
+    
     if user_id in pending_receipt_queues and pending_receipt_queues[user_id]:
-        return await process_next_receipt(update, context, user_id)
+        # Process next if exists
+        return await process_next_receipt(query, context, user_id)
     else:
-        if user_id in pending_receipt_queues:
-            del pending_receipt_queues[user_id]
-        await update.message.reply_text("🎉 All receipts processed!")
+        await context.bot.send_message(chat_id=user_id, text="🎉 All receipts processed!")
+        return ConversationHandler.END
 
-    return ConversationHandler.END
+
 
 @app.route('/')
 def health_check():
@@ -272,7 +293,8 @@ def build_application():
             WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
             WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
             WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
-            WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)]
+            WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
+            WAITING_FOR_BANK: [CallbackQueryHandler(handle_bank)]
         },
         fallbacks=[],
         name="receipt_conversation",  # ✅ Ensure this name is set

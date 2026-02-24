@@ -143,6 +143,7 @@ class FirebaseClient:
             receipt_data = {
                 'merchant': expense_data.get('merchant_name', 'Unknown').upper(),
                 'amount': float(expense_data.get('total_amount', 0)),
+                'bank': expense_data.get('bank', 'Other'),
                 'currency': expense_data.get('currency', 'INR'),
                 'date': expense_data.get('date'),
                 'category': expense_data.get('category', 'Other'),
