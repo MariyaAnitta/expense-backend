@@ -16,7 +16,11 @@ class TransactionExtractor:
         
         if self.use_vertex:
             import vertexai
-            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            try:
+                from vertexai.generative_models import GenerativeModel, GenerationConfig
+            except ImportError:
+                # Fallback for older SDK versions or different structures
+                from vertexai.preview.generative_models import GenerativeModel, GenerationConfig
             
             # Initialize Vertex AI
             project = os.getenv('VITE_GOOGLE_CLOUD_PROJECT')
