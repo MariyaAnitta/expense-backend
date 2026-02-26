@@ -98,7 +98,7 @@ You are an expert at extracting expense data from receipts. Analyze this receipt
     "currency": "INR/USD/etc",
     "tax_amount": numeric value or null,
     "items": ["item1", "item2", "item3"],
-    "category": "Food/Transport/Shopping/Entertainment/Bills/Utilities/Other",
+    "category": "Food/Transport/Travel & Lodging/Shopping/Entertainment/Bills/Utilities/Other",
     "payment_method": "Cash/Card/UPI/Unknown"
 }
 
@@ -107,7 +107,11 @@ Rules:
 - For total_amount, extract the FINAL TOTAL (not subtotal)
 - Convert date to YYYY-MM-DD format
 - Amount must be numeric only (no ₹, $, commas)
-- Guess category based on merchant name and items
+- For category: 
+    - Use "Travel & Lodging" for hotels, stays, and room charges. 
+    - If it's a hotel receipt with "Room Charge", "Stay", or multiple nights, ALWAYS use "Travel & Lodging" even if there are food items on the bill.
+    - Use "Food" for restaurants, cafes, and groceries.
+    - Guess category based on both merchant name AND line items.
 - Return ONLY valid JSON, no markdown, no explanation
 """
             
