@@ -29,6 +29,15 @@ class ReceiptExtractor:
             # Initialize Vertex AI
             project = os.getenv('VITE_GOOGLE_CLOUD_PROJECT')
             location = os.getenv('VITE_GOOGLE_CLOUD_LOCATION', 'us-east1')
+            cred_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            
+            if cred_path and not os.path.exists(cred_path):
+                logger.error(f"❌ Credentials file not found at: {cred_path}")
+                if os.path.exists('/etc/secrets'):
+                    logger.info(f"📁 Contents of /etc/secrets: {os.listdir('/etc/secrets')}")
+                else:
+                    logger.info("📁 /etc/secrets directory does not exist")
+            
             vertexai.init(project=project, location=location)
             
             self.vertex_model = GenerativeModel(self.model_name)
