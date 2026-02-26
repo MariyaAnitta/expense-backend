@@ -13,9 +13,33 @@ class ReceiptExtractor:
     """Extracts expense data from receipt images/PDFs using Google Gemini Vision"""
     
     def __init__(self):
-        # Initialize Google Gemini client
-        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-        self.model = genai.GenerativeModel('gemini-2.0-flash')
+        # Configuration
+        self.use_vertex = os.getenv('VITE_GOOGLE_GENAI_USE_VERTEXAI', 'false').lower() == 'true'
+        self.model_name = os.getenv('VITE_MODEL', 'gemini-2.0-flash')
+        self.temperature = float(os.getenv('VITE_TEMPERATURE', 0.1))
+        
+        if self.use_vertex:
+            import vertexai
+            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            
+            # Initialize Vertex AI
+            project = os.getenv('VITE_GOOGLE_CLOUD_PROJECT')
+            location = os.getenv('VITE_GOOGLE_CLOUD_LOCATION', 'us-east1')
+            vertexai.init(project=project, location=location)
+            
+            self.vertex_model = GenerativeModel(self.model_name)
+            self.generation_config = GenerationConfig(
+                temperature=self.temperature,
+                top_p=float(os.getenv('VITE_TOP_P', 0.95)),
+                top_k=int(os.getenv('VITE_TOP_K', 40)),
+                max_output_tokens=800,
+            )
+            logger.info(f"🤖 Initialized Vertex AI for Receipts with model {self.model_name}")
+        else:
+            # Initialize Google Gemini client (AI Studio - Legacy)
+            genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+            self.model = genai.GenerativeModel(self.model_name)
+            logger.info(f"🤖 Initialized Google AI Studio for Receipts with model {self.model_name}")
     
     def encode_image_to_base64(self, file_path: str) -> str:
         """Convert image/PDF to base64 for API"""
@@ -75,21 +99,32 @@ Rules:
 """
             
             # Call Gemini Vision
-            response = self.model.generate_content(
-                [
-                    prompt,
-                    {
-                        "mime_type": mime_type,
-                        "data": file_bytes
+            if self.use_vertex:
+                from vertexai.generative_models import Part
+                
+                # Create file part
+                file_part = Part.from_data(data=file_bytes, mime_type=mime_type)
+                
+                response = self.vertex_model.generate_content(
+                    [prompt, file_part],
+                    generation_config=self.generation_config
+                )
+                result_text = response.text.strip()
+            else:
+                response = self.model.generate_content(
+                    [
+                        prompt,
+                        {
+                            "mime_type": mime_type,
+                            "data": file_bytes
+                        }
+                    ],
+                    generation_config={
+                        "temperature": self.temperature,
+                        "max_output_tokens": 800,
                     }
-                ],
-                generation_config={
-                    "temperature": 0.1,
-                    "max_output_tokens": 800,
-                }
-            )
-            
-            result_text = response.text.strip()
+                )
+                result_text = response.text.strip()
             
             # Clean markdown if present
             if result_text.startswith('```'):

@@ -9,18 +9,41 @@ class TransactionExtractor:
     """Extracts transaction data from email text using AI"""
     
     def __init__(self):
-        # Initialize OpenRouter client
-        self.client = OpenAI(
-            api_key=os.getenv('OPENROUTER_API_KEY'),
-            base_url="https://openrouter.ai/api/v1"
-        )
+        # Configuration
+        self.use_vertex = os.getenv('VITE_GOOGLE_GENAI_USE_VERTEXAI', 'false').lower() == 'true'
+        self.model_name = os.getenv('VITE_MODEL', 'gemini-2.0-flash')
+        self.temperature = float(os.getenv('VITE_TEMPERATURE', 0.1))
         
-        self.model = os.getenv('OPENROUTER_MODEL', 'gemini-2.0-flash')
+        if self.use_vertex:
+            import vertexai
+            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            
+            # Initialize Vertex AI
+            project = os.getenv('VITE_GOOGLE_CLOUD_PROJECT')
+            location = os.getenv('VITE_GOOGLE_CLOUD_LOCATION', 'us-east1')
+            vertexai.init(project=project, location=location)
+            
+            self.vertex_model = GenerativeModel(self.model_name)
+            self.generation_config = GenerationConfig(
+                temperature=self.temperature,
+                top_p=float(os.getenv('VITE_TOP_P', 0.95)),
+                top_k=int(os.getenv('VITE_TOP_K', 40)),
+                max_output_tokens=500,
+            )
+            print(f"🤖 Initialized Vertex AI with model {self.model_name}")
+        else:
+            # Initialize OpenRouter client (Legacy)
+            self.client = OpenAI(
+                api_key=os.getenv('OPENROUTER_API_KEY'),
+                base_url="https://openrouter.ai/api/v1"
+            )
+            self.model = os.getenv('OPENROUTER_MODEL', 'gemini-2.0-flash')
     
     def extract_transaction(self, email_body, email_subject=""):
         """Extract transaction details from email text"""
         try:
-            print(f"🤖 Extracting transaction data using {self.model}...")
+            active_model = self.model_name if self.use_vertex else self.model
+            print(f"🤖 Extracting transaction data using {active_model} (Vertex: {self.use_vertex})...")
             
             prompt = f"""
 You are a financial data extraction expert. Extract credit card/bank transaction details from this email.
@@ -50,16 +73,22 @@ Rules:
 - Return ONLY the JSON object, nothing else
 """
             
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=500
-            )
-            
-            result_text = response.choices[0].message.content.strip()
+            if self.use_vertex:
+                response = self.vertex_model.generate_content(
+                    prompt,
+                    generation_config=self.generation_config
+                )
+                result_text = response.text.strip()
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.temperature,
+                    max_tokens=500
+                )
+                result_text = response.choices[0].message.content.strip()
             
             # Clean markdown if present
             if result_text.startswith('```'):
