@@ -10,9 +10,10 @@ flask==3.0.0
 gunicorn==21.2.0
 firebase-admin==6.5.0
 python-telegram-bot==21.9
-google-generativeai==0.8.3
-google-cloud-aiplatform==1.38.1
+google-generativeai>=0.8.3
+google-cloud-aiplatform>=1.82.0
 setuptools
+protobuf==4.25.3
 supabase==2.11.0
 nest-asyncio==1.6.0
 urllib3==2.2.3
