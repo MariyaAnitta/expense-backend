@@ -23,6 +23,7 @@ from gmail_auth_dual import (
 from gmail_monitor import GmailMonitor, ReceiptEmailMonitor
 
 from gemini_extractor import TransactionExtractor
+from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 
 load_dotenv()
@@ -97,7 +98,8 @@ class ExpenseMonitor:
         self.transaction_monitor = None
         self.receipt_monitor = None
 
-        self.extractor = None
+        self.transaction_extractor = None
+        self.receipt_extractor = None
         self.firebase = None
 
         self.logger.info("=" * 70)
@@ -148,9 +150,10 @@ class ExpenseMonitor:
             self.logger.info("Initializing Receipt Monitor...")
             self.receipt_monitor = ReceiptEmailMonitor(self.gmail_service_receipts)
 
-            # 3. Initialize AI Extractor
-            self.logger.info("Initializing AI Extractor...")
-            self.extractor = TransactionExtractor()
+            # 3. Initialize AI Extractors
+            self.logger.info("Initializing AI Extractors...")
+            self.transaction_extractor = TransactionExtractor()
+            self.receipt_extractor = ReceiptExtractor()
 
             # 4. Connect to Firebase
             self.logger.info("Connecting to Database...")
@@ -219,16 +222,26 @@ class ExpenseMonitor:
             )
 
             if receipt_emails:
-                receipts = self.extractor.extract_batch(receipt_emails)
-                if receipts:
-                    for r in receipts:
-                        r['source'] = 'forwarded_email'
-
-                    results = self.firebase.save_batch(receipts)
-                    self.logger.info(
-                        f"Receipt emails: Saved {results['saved']}, "
-                        f"Duplicates {results['duplicates']}"
+                self.logger.info(f"Processing {len(receipt_emails)} receipt emails...")
+                for email in receipt_emails:
+                    # Extract using multimodal logic (body + attachments)
+                    extracted_data = self.receipt_extractor.extract_data_from_document(
+                        body_text=email['body'],
+                        attachment_paths=[a['path'] for a in email.get('attachments', [])]
                     )
+                    
+                    if extracted_data and 'error' not in extracted_data:
+                        # Add metadata
+                        extracted_data['gmail_message_id'] = email['message_id']
+                        extracted_data['email_subject'] = email['subject']
+                        extracted_data['email_sender'] = email['sender']
+                        extracted_data['source'] = 'forwarded_email'
+                        extracted_data['user_id'] = os.getenv('GMAIL_RECEIPTS_USER') # Identify the account
+                        
+                        # Save to Firebase (handles both ledgers internally)
+                        self.firebase.save_telegram_receipt(extracted_data)
+                    else:
+                        self.logger.warning(f"Failed to extract info from email {email['message_id']}")
             else:
                 self.logger.info("No new receipt emails")
 

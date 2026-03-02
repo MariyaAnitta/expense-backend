@@ -195,7 +195,7 @@ class ReceiptEmailMonitor:
             return []
 
     def get_email_content(self, message_id):
-        """Get full content of receipt email"""
+        """Get full content of receipt email, including attachments"""
         try:
             message = self.service.users().messages().get(
                 userId='me',
@@ -209,6 +209,9 @@ class ReceiptEmailMonitor:
             date = next((h['value'] for h in headers if h['name'] == 'Date'), 'Unknown')
 
             body = self._extract_body(message['payload'])
+            
+            # Extract attachments
+            attachments = self._get_attachments(message_id, message['payload'])
 
             return {
                 'message_id': message_id,
@@ -216,11 +219,58 @@ class ReceiptEmailMonitor:
                 'sender': sender,
                 'date': date,
                 'body': body,
-                'snippet': message.get('snippet', '')
+                'snippet': message.get('snippet', ''),
+                'attachments': attachments
             }
 
         except Exception as e:
             print(f"Error fetching receipt email {message_id}: {str(e)}")
+            return None
+
+    def _get_attachments(self, message_id, payload):
+        """Extract and download attachments from email payload"""
+        attachments = []
+        if 'parts' in payload:
+            for part in payload['parts']:
+                if 'filename' in part and part['filename']:
+                    mime_type = part.get('mimeType', '')
+                    # We only care about images and PDFs
+                    if any(t in mime_type for t in ['image', 'pdf']):
+                        attachment_id = part['body'].get('attachmentId')
+                        if attachment_id:
+                            file_path = self._download_attachment(message_id, attachment_id, part['filename'])
+                            if file_path:
+                                attachments.append({
+                                    'path': file_path,
+                                    'filename': part['filename'],
+                                    'mime_type': mime_type
+                                })
+        return attachments
+
+    def _download_attachment(self, message_id, attachment_id, filename):
+        """Download a single attachment to temp folder"""
+        try:
+            attachment = self.service.users().messages().attachments().get(
+                userId='me', messageId=message_id, id=attachment_id
+            ).execute()
+            
+            data = base64.urlsafe_b64decode(attachment['data'])
+            
+            # Ensure temp directory exists
+            os.makedirs('temp', exist_ok=True)
+            
+            # Clean filename to avoid path traversal
+            safe_filename = "".join([c for c in filename if c.isalnum() or c in ('.','_','-')]).strip()
+            # Add message_id to ensure uniqueness
+            path = os.path.join('temp', f"{message_id}_{safe_filename}")
+            
+            with open(path, 'wb') as f:
+                f.write(data)
+            
+            print(f"📎 Downloaded attachment: {filename}")
+            return path
+        except Exception as e:
+            print(f"Failed to download attachment {filename}: {e}")
             return None
 
     def _extract_body(self, payload):

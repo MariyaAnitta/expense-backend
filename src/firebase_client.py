@@ -140,13 +140,17 @@ class FirebaseClient:
         Save Telegram receipt expense to Firestore
         """
         try:
+            # Standardize category name as 'cat' for consistency with Financial Ledger
+            cat = expense_data.get('category', 'General')
+            if cat == 'Food': cat = 'Meals' # Map to required categories
+            
             receipt_data = {
                 'merchant': expense_data.get('merchant_name', 'Unknown').upper(),
                 'amount': float(expense_data.get('total_amount', 0)),
                 'bank': expense_data.get('bank', 'Other'),
                 'currency': expense_data.get('currency', 'INR'),
                 'date': expense_data.get('date'),
-                'category': expense_data.get('category', 'Other'),
+                'cat': cat,
                 'source': 'telegram',
                 'items': expense_data.get('items', []),
                 'payment_method': expense_data.get('payment_method'),
@@ -155,12 +159,13 @@ class FirebaseClient:
                 'file_path': expense_data.get('file_path'),
                 'confidence': 0.90,
                 
-                # NEW FIELDS
+                # Metadata fields
                 'main_category': expense_data.get('main_category'),  # Personal or Business
                 'company_project': expense_data.get('company_project'),
-                'reimbursement_status': expense_data.get('reimbursement_status'),  # Pending/Not Needed/Not Applicable
-                'paid_by': expense_data.get('paid_by'),  # Employee or Company
+                'reimbursement_status': expense_data.get('reimbursement_status'),
+                'paid_by': expense_data.get('paid_by'),
                 'notes': expense_data.get('notes'),
+                'user_id': expense_data.get('user_id'), # New field for privacy
                 
                 'created_at': firestore.SERVER_TIMESTAMP
             }
@@ -168,16 +173,50 @@ class FirebaseClient:
             # Remove null values
             receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
             
-            doc_ref = self.db.collection('telegram_receipts').add(receipt_data)
+            doc_ref = self.db.collection('expenses').add(receipt_data)
             expense_id = doc_ref[1].id
             
-            print(f"✅ Saved Telegram receipt: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")
+            print(f"✅ Saved to Financial Ledger: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")
             
+            # Check if this should also go to Mobility Ledger
+            if cat in ['Lodging', 'Transport'] or expense_data.get('is_mobility'):
+                self.save_mobility_log(expense_data, telegram_user_id)
+
             return {'success': True, 'expense_id': expense_id}
             
         except Exception as e:
             print(f"❌ Error saving Telegram receipt: {str(e)}")
             return {'success': False, 'error': str(e)}
+
+    def save_mobility_log(self, mobility_data, user_id=None):
+        """
+        Save data to mobility_logs collection (Flights, Hotels, Visas)
+        """
+        try:
+            log_data = {
+                'type': mobility_data.get('mobility_type'), # 'flight' or 'accommodation'
+                'provider': mobility_data.get('merchant_name') or mobility_data.get('provider'),
+                'destination': mobility_data.get('destination'),
+                'date': mobility_data.get('date'), # Start/Departure
+                'end_date': mobility_data.get('end_date'), # Return/Check-out
+                'pnr': mobility_data.get('pnr') or mobility_data.get('booking_id'),
+                'guest_name': mobility_data.get('guest_name'),
+                'user_id': user_id or mobility_data.get('user_id'),
+                'amount': float(mobility_data.get('total_amount', 0)),
+                'currency': mobility_data.get('currency', 'INR'),
+                'source': mobility_data.get('source', 'unknown'),
+                'created_at': firestore.SERVER_TIMESTAMP
+            }
+            
+            # Clean nulls
+            log_data = {k: v for k, v in log_data.items() if v is not None}
+            
+            self.db.collection('travel_logs').add(log_data)
+            print(f"✈️ Saved to Mobility Ledger: {log_data.get('type')} at {log_data.get('provider')}")
+            return True
+        except Exception as e:
+            print(f"❌ Error saving mobility log: {e}")
+            return False
 
     def save_batch(self, transactions):
         """

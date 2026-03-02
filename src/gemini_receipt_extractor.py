@@ -59,131 +59,128 @@ class ReceiptExtractor:
         with open(file_path, 'rb') as f:
             return base64.b64encode(f.read()).decode('utf-8')
     
-    def extract_expense_from_receipt(self, file_path: str) -> dict:
+    def extract_data_from_document(self, body_text: str = None, attachment_paths: list = None) -> dict:
         """
-        Extract expense data from receipt image/PDF
+        Extract expense and travel data from email body and/or attachments.
         
         Args:
-            file_path: Path to the receipt file
+            body_text: The text content of the email
+            attachment_paths: List of local paths to downloaded attachments
             
         Returns:
-            dict: Extracted expense data
+            dict: Extracted data containing both Financial and Mobility ledgers
         """
         try:
-            logger.info(f"🔍 Processing receipt: {file_path}")
-            
-            # Determine file type
-            file_extension = file_path.lower().split('.')[-1]
-            if file_extension in ['jpg', 'jpeg']:
-                mime_type = "image/jpeg"
-            elif file_extension == 'png':
-                mime_type = "image/png"
-            elif file_extension == 'pdf':
-                mime_type = "application/pdf"
-            else:
-                mime_type = "image/jpeg"
-            
-            # Read file bytes
-            with open(file_path, "rb") as f:
-                file_bytes = f.read()
+            logger.info(f"🔍 Analyzing document: {len(attachment_paths) if attachment_paths else 0} attachments found")
             
             # Prompt
             prompt = """
-You are an expert at extracting expense data from receipts. Analyze this receipt image and extract the following information in JSON format:
+You are an expert at financial and travel data extraction. Analyze the provided text and/or files (PDFs/Images) and extract data for TWO ledgers:
 
+1. THE FINANCIAL LEDGER (Expenses)
+Extract the following fields in JSON format:
 {
-    "merchant_name": "store/restaurant name",
-    "date": "YYYY-MM-DD format",
-    "total_amount": numeric value only (no currency symbols),
-    "currency": "INR/USD/etc",
-    "tax_amount": numeric value or null,
-    "items": ["item1", "item2", "item3"],
-    "category": "Food/Transport/Lodging/Shopping/Entertainment/Bills/Utilities/Other",
-    "payment_method": "Cash/Card/UPI/Unknown"
+    "merchant_name": "store/airline/hotel/description",
+    "total_amount": numeric value only,
+    "currency": "3-letter code (AED, USD, INR, etc.)",
+    "date": "YYYY-MM-DD",
+    "cat": "Transport/Meals/Lodging/Office/Utilities/Salary/Transfer/General",
+    "items": ["list of items bought"],
+    "tax_amount": numeric tax value or null,
+    "main_category": "Business or Personal",
+    "payment_method": "Card/Cash/UPI/etc"
 }
 
-Rules:
-- If any field is unclear or missing, use null
-- For total_amount, extract the FINAL TOTAL (not subtotal)
-- Convert date to YYYY-MM-DD format
-- Amount must be numeric only (no ₹, $, commas)
-- For category: 
-    - Use "Lodging" for hotels, stays, and room charges. 
-    - Use "Transport" for flights, taxis, trains, and fuel.
-    - Use "Food" for restaurants, cafes, and groceries.
-    - If it's a hotel receipt with "Room Charge" or "Stay", ALWAYS use "Lodging" even if there are food items on the bill.
-    - IF it's an airline receipt or flight booking, ALWAYS use "Transport".
-    - Guess category based on both merchant name AND line items.
-- Return ONLY valid JSON, no markdown, no explanation
+2. THE MOBILITY LEDGER (Travel Logs)
+ONLY if the document is a flight ticket, hotel booking, or visa, ALSO extract:
+{
+    "is_mobility": true,
+    "mobility_type": "flight or accommodation",
+    "provider": "Airline name or Hotel name",
+    "destination": "City, Country",
+    "end_date": "Check-out or Return flight date (YYYY-MM-DD)",
+    "pnr": "PNR number or Booking ID",
+    "guest_name": "Name of the traveler/guest"
+}
+
+Categorization Rules:
+- "Lodging": Hotels, stays, room charges.
+- "Transport": Flights (ALWAYS), taxis, trains, fuel, parking.
+- "Meals": Restaurants, cafes, food delivery.
+- "Utilities": Phone, internet, electricity.
+- "General": Anything else that doesn't fit.
+
+Context Rule:
+- Use all available context (text + images) to fill missing fields.
+- If the document mentions a hotel stay, prioritize "Lodging" even if food is listed.
+- If it's a flight, it's ALWAYS "Transport".
+
+Return ONLY a single valid JSON object combining both. If no mobility data is found, "is_mobility" should be false.
 """
             
-            # Call Gemini Vision
+            # Combine parts for Gemini
+            parts = [prompt]
+            if body_text:
+                parts.append(f"EMAIL BODY CONTENT:\n{body_text}")
+            
+            # Prepare attachments
+            if attachment_paths:
+                for path in attachment_paths:
+                    mime_type = self._get_mime_type(path)
+                    with open(path, "rb") as f:
+                        file_bytes = f.read()
+                    
+                    if self.use_vertex:
+                        try:
+                            from vertexai.generative_models import Part
+                        except ImportError:
+                            from vertexai.preview.generative_models import Part
+                        parts.append(Part.from_data(data=file_bytes, mime_type=mime_type))
+                    else:
+                        parts.append({"mime_type": mime_type, "data": file_bytes})
+
+            # Call Gemini
             if self.use_vertex:
-                try:
-                    from vertexai.generative_models import Part
-                except ImportError:
-                    from vertexai.preview.generative_models import Part
-                
-                # Create file part
-                file_part = Part.from_data(data=file_bytes, mime_type=mime_type)
-                
                 response = self.vertex_model.generate_content(
-                    [prompt, file_part],
+                    parts,
                     generation_config=self.generation_config
                 )
                 result_text = response.text.strip()
             else:
                 response = self.model.generate_content(
-                    [
-                        prompt,
-                        {
-                            "mime_type": mime_type,
-                            "data": file_bytes
-                        }
-                    ],
+                    parts,
                     generation_config={
                         "temperature": self.temperature,
-                        "max_output_tokens": 800,
+                        "max_output_tokens": 1000,
                     }
                 )
                 result_text = response.text.strip()
             
-            # Clean markdown if present
+            # Clean markdown
             if result_text.startswith('```'):
                 result_text = result_text.split('```')[1]
                 if result_text.startswith('json'):
                     result_text = result_text[4:]
             
-            expense_data = json.loads(result_text.strip())
+            data = json.loads(result_text.strip())
             
-            logger.info(f"✅ Extracted: {expense_data.get('merchant_name')} - {expense_data.get('currency')} {expense_data.get('total_amount')}")
+            logger.info(f"✅ Extracted: {data.get('merchant_name')} - {data.get('currency')} {data.get('total_amount')}")
+            return data
             
-            expense_data['source'] = 'telegram'
-            expense_data['file_path'] = file_path
-            
-            return expense_data
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Failed to parse AI response as JSON: {e}")
-            logger.error(f"Response text: {result_text}")
-            return {
-                "error": "Failed to parse receipt",
-                "merchant_name": "Unknown",
-                "total_amount": 0,
-                "currency": "INR",
-                "source": "telegram",
-                "file_path": file_path
-            }
         except Exception as e:
-            logger.error(f"❌ Error extracting receipt: {e}")
-            return {
-                "error": str(e),
-                "merchant_name": "Unknown",
-                "total_amount": 0,
-                "currency": "INR",
-                "source": "telegram",
-                "file_path": file_path
-            }
+            logger.error(f"❌ Error in advanced extraction: {e}")
+            return {"error": str(e)}
+
+    def _get_mime_type(self, file_path: str) -> str:
+        file_extension = file_path.lower().split('.')[-1]
+        if file_extension in ['jpg', 'jpeg']: return "image/jpeg"
+        if file_extension == 'png': return "image/png"
+        if file_extension == 'pdf': return "application/pdf"
+        return "image/jpeg"
+
+    def extract_expense_from_receipt(self, file_path: str) -> dict:
+        """Old method kept for backward compatibility with telegram_bot.py"""
+        return self.extract_data_from_document(attachment_paths=[file_path])
 
 if __name__ == "__main__":
     extractor = ReceiptExtractor()
