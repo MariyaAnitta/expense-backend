@@ -146,22 +146,45 @@ Return ONLY a single valid JSON object combining both. If no mobility data is fo
                     else:
                         parts.append({"mime_type": mime_type, "data": file_bytes})
 
-            # Call Gemini
-            if self.use_vertex:
-                response = self.vertex_model.generate_content(
-                    parts,
-                    generation_config=self.generation_config
-                )
-                result_text = response.text.strip()
-            else:
-                response = self.model.generate_content(
-                    parts,
-                    generation_config={
-                        "temperature": self.temperature,
-                        "max_output_tokens": 1000,
-                    }
-                )
-                result_text = response.text.strip()
+            # Call Gemini with Retries to handle 429/Rate Limit errors
+            import time
+            max_retries = 3
+            retry_delay = 2
+            result_text = None
+            
+            for attempt in range(max_retries):
+                try:
+                    if self.use_vertex:
+                        response = self.vertex_model.generate_content(
+                            parts,
+                            generation_config=self.generation_config
+                        )
+                        result_text = response.text.strip()
+                    else:
+                        response = self.model.generate_content(
+                            parts,
+                            generation_config={
+                                "temperature": self.temperature,
+                                "max_output_tokens": 1000,
+                            }
+                        )
+                        result_text = response.text.strip()
+                    
+                    # If we got here, success! 
+                    break
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if ("429" in error_msg or "resource exhausted" in error_msg or "quota" in error_msg) and attempt < max_retries - 1:
+                        logger.warning(f"⚠️ Rate limited (429). Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2 # Exponential backoff
+                        continue
+                    else:
+                        logger.error(f"❌ Error in advanced extraction: {str(e)}")
+                        return {"error": str(e)}
+
+            if not result_text:
+                return {"error": "Failed to get response from AI after retries"}
             
             # Clean markdown
             if result_text.startswith('```'):

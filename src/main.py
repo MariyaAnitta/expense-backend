@@ -242,6 +242,10 @@ class ExpenseMonitor:
                         self.firebase.save_telegram_receipt(extracted_data)
                     else:
                         self.logger.warning(f"Failed to extract info from email {email['message_id']}")
+                    
+                    # Add a small delay to avoid rate limits (429 errors)
+                    import time
+                    time.sleep(2)
             else:
                 self.logger.info("No new receipt emails")
 
