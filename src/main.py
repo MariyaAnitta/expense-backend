@@ -90,11 +90,10 @@ class ExpenseMonitor:
         self.logger = setup_logger()
         self.check_interval = int(os.getenv('CHECK_INTERVAL_MINUTES', 10)) * 60
 
-        # Dual Gmail services
-        self.gmail_service_personal = None
-        self.gmail_service_receipts = None
+        # Primary Gmail service (Consolidated)
+        self.gmail_service = None
 
-        # Dual monitors
+        # Monitors
         self.transaction_monitor = None
         self.receipt_monitor = None
 
@@ -137,11 +136,8 @@ class ExpenseMonitor:
         """Initialize all components"""
         try:
             # Only use the Receipts Gmail account as requested
-            self.gmail_service = self._init_gmail_service(
-                os.getenv('GMAIL_RECEIPTS_CLIENT_ID'),
-                os.getenv('GMAIL_RECEIPTS_CLIENT_SECRET'),
-                os.getenv('GMAIL_RECEIPTS_TOKEN_BASE64')
-            )
+            self.logger.info("Authenticating expenseflow.10xds@gmail.com...")
+            self.gmail_service = get_gmail_service_receipts()
             
             if not self.gmail_service:
                 raise Exception("❌ CRITICAL: Failed to initialize Gmail Service for expenseflow.10xds@gmail.com")
