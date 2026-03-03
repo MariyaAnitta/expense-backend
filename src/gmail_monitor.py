@@ -1,7 +1,14 @@
+import os
+import json
 import base64
-from email.mime.text import MIMEText
-from datetime import datetime, timedelta
+import logging
 import re
+import pickle
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
+logger = logging.getLogger('ExpenseMonitor')
 
 
 class GmailMonitor:
@@ -161,27 +168,10 @@ class ReceiptEmailMonitor:
             except Exception as e:
                 logger.warning(f"⚠️ Could not verify email address: {e}")
 
-            query_parts = []
-
-            if after_timestamp:
-                try:
-                    # If we have a very recent timestamp (within last 24h), 
-                    # use a more lenient 'newer_than' filter to avoid date-boundary misses
-                    query_parts.append('newer_than:2d')
-                    logger.info("Syncing recent mail (using newer_than:2d for safety)")
-                except Exception as e:
-                    logger.error(f"Error checking timestamp: {e}")
-                    query_parts.append('newer_than:1d')
-            else:
-                query_parts.append('newer_than:30d')
-                logger.info("First run: searching last 30 days of receipts")
-
-            query = ' '.join(query_parts) if query_parts else 'in:inbox'
-            
-            # Ensure we ALWAYS search in the inbox for the receipts account
-            if 'in:inbox' not in query:
-                query = f"in:inbox {query}"
-                
+            # Simplified query: look for anything in the inbox from the last 2 days
+            # We filter for duplicates using logic in main.py / firebase_client.py
+            # This avoids complex date boundary issues.
+            query = "in:inbox newer_than:2d"
             logger.info(f"Final Receipts Search Query: {query}")
 
             results = self.service.users().messages().list(
