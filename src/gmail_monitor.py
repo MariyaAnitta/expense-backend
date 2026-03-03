@@ -230,24 +230,35 @@ class ReceiptEmailMonitor:
     def _get_attachments(self, message_id, payload):
         """Recursively extract and download attachments from email payload"""
         attachments = []
+        
+        # Log the mimeType of this part to help debug
+        mime_type = payload.get('mimeType', 'unknown')
+        filename = payload.get('filename', '')
+        # print(f"  🔍 Checking part: {mime_type} (file: {filename})")
+
         if 'parts' in payload:
             for part in payload['parts']:
                 # Handle nested parts (recursive)
-                if 'parts' in part:
-                    attachments.extend(self._get_attachments(message_id, part))
-                
-                # Handle single attachment
-                if 'filename' in part and part['filename']:
-                    mime_type = part.get('mimeType', '')
-                    # We only care about images and PDFs
-                    if any(t in mime_type for t in ['image', 'pdf']):
-                        attachment_id = part['body'].get('attachmentId')
-                        if attachment_id:
-                            file_path = self._download_attachment(message_id, attachment_id, part['filename'])
-                            if file_path:
-                                attachments.append({
-                                    'path': file_path,
-                                    'filename': part['filename'],
+                attachments.extend(self._get_attachments(message_id, part))
+        
+        # Check if THIS part is an attachment
+        if filename:
+            mime_type = payload.get('mimeType', '')
+            # We only care about images and PDFs
+            if any(t in mime_type for t in ['image', 'pdf']):
+                attachment_id = payload['body'].get('attachmentId')
+                if attachment_id:
+                    file_path = self._download_attachment(message_id, attachment_id, filename)
+                    if file_path:
+                        attachments.append({
+                            'path': file_path,
+                            'filename': filename,
+                            'mime_type': mime_type
+                        })
+                else:
+                    print(f"  ⚠️ Part has filename '{filename}' but no attachmentId")
+        
+        return attachments
                                     'mime_type': mime_type
                                 })
         return attachments
