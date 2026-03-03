@@ -243,9 +243,12 @@ class ExpenseMonitor:
                     else:
                         self.logger.warning(f"Failed to extract info from email {email['message_id']}")
                     
-                    # Add a small delay to avoid rate limits (429 errors)
+                    # Add a delay to avoid rate limits (429 errors)
+                    # Increased to 5 seconds + random jitter to be safer on trial tiers
                     import time
-                    time.sleep(2)
+                    import random
+                    sleep_time = 5 + random.uniform(0, 2)
+                    time.sleep(sleep_time)
             else:
                 self.logger.info("No new receipt emails")
 

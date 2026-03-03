@@ -173,7 +173,7 @@ class ReceiptEmailMonitor:
                 print("First run: searching last 30 days of receipts")
 
             query = ' '.join(query_parts) if query_parts else 'in:inbox'
-            print(f"Searching receipts Gmail: {query}")
+            logger.info(f"Searching receipts Gmail: {query}")
 
             results = self.service.users().messages().list(
                 userId='me',
@@ -184,10 +184,10 @@ class ReceiptEmailMonitor:
             messages = results.get('messages', [])
 
             if not messages:
-                print("No new receipt emails found")
+                logger.info("No new receipt emails found")
                 return []
-
-            print(f"Found {len(messages)} receipt emails")
+ 
+            logger.info(f"Found {len(messages)} receipt emails")
             return messages
 
         except Exception as e:
@@ -236,7 +236,7 @@ class ReceiptEmailMonitor:
         part_id = payload.get('partId', '0')
         
         # Log structure for debugging
-        print(f"  [DEBUG] Email Part {part_id}: Mime={mime_type}, Filename='{filename}'")
+        logger.info(f"  [DEBUG] Email Part {part_id}: Mime={mime_type}, Filename='{filename}'")
 
         # Check for nested parts FIRST
         if 'parts' in payload:
@@ -252,7 +252,7 @@ class ReceiptEmailMonitor:
             if not is_valid_type and 'octet-stream' in mime_type.lower():
                 if any(ext in filename.lower() for ext in ['.pdf', '.jpg', '.jpeg', '.png']):
                     is_valid_type = True
-                    print(f"  [DEBUG] Found octet-stream attachment that looks like a valid file: {filename}")
+                    logger.info(f"  [DEBUG] Found octet-stream attachment that looks like a valid file: {filename}")
 
             if is_valid_type:
                 attachment_id = payload.get('body', {}).get('attachmentId')
@@ -265,7 +265,7 @@ class ReceiptEmailMonitor:
                             'mime_type': mime_type
                         })
                 else:
-                    print(f"  ⚠️ Part has filename '{filename}' but no attachmentId in body")
+                    logger.warning(f"  ⚠️ Part has filename '{filename}' but no attachmentId in body")
         
         return attachments
 
@@ -289,10 +289,10 @@ class ReceiptEmailMonitor:
             with open(path, 'wb') as f:
                 f.write(data)
             
-            print(f"📎 Downloaded attachment: {filename}")
+            logger.info(f"📎 Downloaded attachment: {filename}")
             return path
         except Exception as e:
-            print(f"Failed to download attachment {filename}: {e}")
+            logger.error(f"Failed to download attachment {filename}: {e}")
             return None
 
     def _extract_body(self, payload):
@@ -335,12 +335,12 @@ class ReceiptEmailMonitor:
 
         emails = []
         for i, msg in enumerate(message_ids, 1):
-            print(f"\nFetching receipt {i}/{len(message_ids)}...")
+            logger.info(f"\nFetching receipt {i}/{len(message_ids)}...")
             email_data = self.get_email_content(msg['id'])
             if email_data:
                 emails.append(email_data)
-                print(f"Subject: {email_data['subject'][:60]}...")
-                print(f"From: {email_data['sender'][:50]}")
+                logger.info(f"Subject: {email_data['subject'][:60]}...")
+                logger.info(f"From: {email_data['sender'][:50]}")
 
         print("\n" + "=" * 60)
         print(f"Successfully fetched {len(emails)} receipt emails")

@@ -151,6 +151,16 @@ CRITICAL RULES:
                     else:
                         parts.append({"mime_type": mime_type, "data": file_bytes})
 
+            # Check if we have ANY data to send
+            if not body_text and not attachment_paths:
+                logger.warning("⚠️ No body text and no attachments found. Skipping AI extraction.")
+                return {"error": "No content to analyze"}
+            
+            # If body is tiny (e.g. "Sent from iPhone") and no attachments, also skip
+            if body_text and len(body_text.strip()) < 10 and not attachment_paths:
+                logger.warning(f"⚠️ Body text too short ({len(body_text)}) and no attachments. Skipping.")
+                return {"error": "Insufficient content"}
+
             # Call Gemini with Retries to handle 429/Rate Limit errors
             import time
             max_retries = 3
@@ -191,20 +201,23 @@ CRITICAL RULES:
             if not result_text:
                 return {"error": "Failed to get response from AI after retries"}
             
-            # Clean markdown and extract JSON
+            # Clean markdown and extract JSON using regex
             import re
             json_match = re.search(r'\{.*\}', result_text.strip(), re.DOTALL)
             if json_match:
-                result_text = json_match.group(0)
-            
-            try:
-                data = json.loads(result_text)
-                logger.info(f"✅ Extracted: {data.get('merchant_name')} - {data.get('currency')} {data.get('total_amount')}")
-                return data
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Failed to parse AI response as JSON: {e}")
+                json_text = json_match.group(0)
+                try:
+                    data = json.loads(json_text)
+                    logger.info(f"✅ Extracted: {data.get('merchant_name')} - {data.get('currency')} {data.get('total_amount')}")
+                    return data
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Failed to parse AI response as JSON: {e}")
+                    logger.error(f"Raw response: {result_text}")
+                    return {"error": "Invalid JSON format from AI"}
+            else:
+                logger.error("❌ No JSON object found in AI response")
                 logger.error(f"Raw response: {result_text}")
-                return {"error": "Invalid JSON format from AI"}
+                return {"error": "AI response did not contain JSON"}
             
         except Exception as e:
             logger.error(f"❌ Error in advanced extraction: {e}")
