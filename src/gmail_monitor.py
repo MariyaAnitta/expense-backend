@@ -228,10 +228,15 @@ class ReceiptEmailMonitor:
             return None
 
     def _get_attachments(self, message_id, payload):
-        """Extract and download attachments from email payload"""
+        """Recursively extract and download attachments from email payload"""
         attachments = []
         if 'parts' in payload:
             for part in payload['parts']:
+                # Handle nested parts (recursive)
+                if 'parts' in part:
+                    attachments.extend(self._get_attachments(message_id, part))
+                
+                # Handle single attachment
                 if 'filename' in part and part['filename']:
                     mime_type = part.get('mimeType', '')
                     # We only care about images and PDFs
@@ -274,27 +279,31 @@ class ReceiptEmailMonitor:
             return None
 
     def _extract_body(self, payload):
-        """Extract email body"""
+        """Recursively extract email body"""
         body = ""
 
         if 'parts' in payload:
             for part in payload['parts']:
                 if part['mimeType'] == 'text/plain' and 'data' in part['body']:
-                    body = base64.urlsafe_b64decode(
+                    body += base64.urlsafe_b64decode(
                         part['body']['data']
                     ).decode('utf-8')
-                    break
                 elif part['mimeType'] == 'text/html' and 'data' in part['body']:
-                    body = base64.urlsafe_b64decode(
+                    # Use HTML if plain text isn't available or alongside it
+                    html_content = base64.urlsafe_b64decode(
                         part['body']['data']
                     ).decode('utf-8')
+                    # Very basic HTML cleaning
+                    body += re.sub(r'<[^>]+>', ' ', html_content)
+                elif 'parts' in part:
+                    # Handle nested multi-part
+                    body += self._extract_body(part)
         else:
             if 'data' in payload['body']:
                 body = base64.urlsafe_b64decode(
                     payload['body']['data']
                 ).decode('utf-8')
 
-        body = re.sub(r'<[^>]+>', ' ', body)
         body = re.sub(r'\s+', ' ', body).strip()
         return body
 

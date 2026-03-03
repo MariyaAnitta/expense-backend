@@ -20,25 +20,32 @@ class ReceiptExtractor:
         
         if self.use_vertex:
             import vertexai
+            import google.auth
+            from google.oauth2 import service_account
+            
             try:
                 from vertexai.generative_models import GenerativeModel, GenerationConfig
             except ImportError:
-                # Fallback for older SDK versions or different structures
                 from vertexai.preview.generative_models import GenerativeModel, GenerationConfig
             
             # Initialize Vertex AI
             project = os.getenv('VITE_GOOGLE_CLOUD_PROJECT')
             location = os.getenv('VITE_GOOGLE_CLOUD_LOCATION', 'us-east1')
             cred_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            cred_json_str = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
             
-            if cred_path and not os.path.exists(cred_path):
-                logger.error(f"❌ Credentials file not found at: {cred_path}")
-                if os.path.exists('/etc/secrets'):
-                    logger.info(f"📁 Contents of /etc/secrets: {os.listdir('/etc/secrets')}")
-                else:
-                    logger.info("📁 /etc/secrets directory does not exist")
+            credentials = None
+            if cred_path and os.path.exists(cred_path):
+                logger.info(f"📍 Loading Vertex credentials from file: {cred_path}")
+                # vertexai.init will automatically find it via env var
+            elif cred_json_str:
+                logger.info("📍 Loading Vertex credentials from environment variable JSON")
+                cred_dict = json.loads(cred_json_str)
+                credentials = service_account.Credentials.from_service_account_info(cred_dict)
+            else:
+                logger.warning("⚠️ No explicit Vertex credentials found. Relying on default environment.")
             
-            vertexai.init(project=project, location=location)
+            vertexai.init(project=project, location=location, credentials=credentials)
             
             self.vertex_model = GenerativeModel(self.model_name)
             self.generation_config = GenerationConfig(
