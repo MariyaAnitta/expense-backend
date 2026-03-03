@@ -136,21 +136,22 @@ class ExpenseMonitor:
     def _initialize(self):
         """Initialize all components"""
         try:
-            # 1. Authenticate Both Gmail Accounts
-            self.logger.info("Authenticating Personal Gmail (Transaction Alerts)...")
-            self.gmail_service_personal = get_gmail_service_personal()
-
-            self.logger.info("Authenticating Receipts Gmail (Forwarded Receipts)...")
-            self.gmail_service_receipts = get_gmail_service_receipts()
-
-            # 2. Initialize Both Monitors
-            self.logger.info("Initializing Transaction Monitor...")
-            self.transaction_monitor = GmailMonitor(self.gmail_service_personal)
-
-            self.logger.info("Initializing Receipt Monitor...")
-            self.receipt_monitor = ReceiptEmailMonitor(self.gmail_service_receipts)
-
-            # 3. Initialize AI Extractors
+            # Only use the Receipts Gmail account as requested
+            self.gmail_service = self._init_gmail_service(
+                os.getenv('GMAIL_RECEIPTS_CLIENT_ID'),
+                os.getenv('GMAIL_RECEIPTS_CLIENT_SECRET'),
+                os.getenv('GMAIL_RECEIPTS_TOKEN_BASE64')
+            )
+            
+            if not self.gmail_service:
+                raise Exception("❌ CRITICAL: Failed to initialize Gmail Service for expenseflow.10xds@gmail.com")
+            
+            # Initialize Monitors using the same primary service
+            self.receipt_monitor = ReceiptEmailMonitor(self.gmail_service)
+            # (Transaction monitor kept for code structure, but pointed at same service)
+            self.transaction_monitor = GmailMonitor(self.gmail_service)
+            
+            self.logger.info("✅ Gmail Monitor initialized for expenseflow.10xds@gmail.com")
             self.logger.info("Initializing AI Extractors...")
             self.transaction_extractor = TransactionExtractor()
             self.receipt_extractor = ReceiptExtractor()
@@ -189,44 +190,25 @@ class ExpenseMonitor:
     # NEW process_cycle (DUAL ACCOUNT) — ACTIVE
     # ======================================================
     def process_cycle(self):
-        """Run one complete monitoring cycle for BOTH accounts"""
+        """Run one complete monitoring cycle for the primary account"""
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.logger.info("=" * 70)
             self.logger.info(f"STARTING MONITORING CYCLE - {current_time}")
+            self.logger.info(f"Target Account: expenseflow.10xds@gmail.com")
             self.logger.info("=" * 70)
 
-            # === ACCOUNT 1: TRANSACTIONS (Personal) ===
-            self.logger.info("\n[1/2] Checking Personal Gmail for transaction alerts...")
-            last_alert_ts = self.firebase.get_last_processed_timestamp(source_filter='gmail_alert')
-            transaction_emails = self.transaction_monitor.fetch_new_transactions(
-                after_timestamp=last_alert_ts
-            )
-
-            if transaction_emails:
-                # We need to ensure these are saved with the correct source
-                for email in transaction_emails:
-                    email['source'] = 'gmail_alert'
-                
-                transactions = self.extractor.extract_batch(transaction_emails)
-                if transactions:
-                    results = self.firebase.save_batch(transactions)
-                    self.logger.info(
-                        f"Transaction emails: Saved {results['saved']}, "
-                        f"Duplicates {results['duplicates']}"
-                    )
-            else:
-                self.logger.info("No new transaction emails")
-
-            # === ACCOUNT 2: RECEIPTS (Forwarded) ===
-            self.logger.info("\n[2/2] Checking Receipts Gmail for forwarded receipts...")
-            last_receipt_ts = self.firebase.get_last_processed_timestamp(source_filter='forwarded_email')
+            # Check for ANY new emails (using the combined Receipt Monitor logic)
+            # This handles both plain text alerts and forwarded attachments
+            last_sync_ts = self.firebase.get_last_processed_timestamp(source_filter='forwarded_email')
+            
+            self.logger.info(f"Checking for new emails...")
             receipt_emails = self.receipt_monitor.fetch_new_receipts(
-                after_timestamp=last_receipt_ts
+                after_timestamp=last_sync_ts
             )
 
             if receipt_emails:
-                self.logger.info(f"Processing {len(receipt_emails)} receipt emails...")
+                self.logger.info(f"Processing {len(receipt_emails)} new emails found in inbox...")
                 for email in receipt_emails:
                     # Extract using multimodal logic (body + attachments)
                     extracted_data = self.receipt_extractor.extract_data_from_document(
@@ -239,22 +221,21 @@ class ExpenseMonitor:
                         extracted_data['gmail_message_id'] = email['message_id']
                         extracted_data['email_subject'] = email['subject']
                         extracted_data['email_sender'] = email['sender']
-                        extracted_data['source'] = 'forwarded_email' # EXPLICIT SOURCE
+                        extracted_data['source'] = 'forwarded_email' # Marker for indexing
                         extracted_data['user_id'] = os.getenv('GMAIL_RECEIPTS_USER')
                         
-                        # Save to Firebase (handles both ledgers internally)
+                        # Save to Firebase
                         self.firebase.save_telegram_receipt(extracted_data)
                     else:
-                        self.logger.warning(f"Failed to extract info from email {email['message_id']}")
+                        # If AI fails, still log it so we don't try again (optional)
+                        self.logger.warning(f"Failed or skipped extracting from {email['message_id']}")
                     
-                    # Add a delay to avoid rate limits (429 errors)
-                    # Increased to 5 seconds + random jitter to be safer on trial tiers
+                    # Prevent 429
                     import time
                     import random
-                    sleep_time = 5 + random.uniform(0, 2)
-                    time.sleep(sleep_time)
+                    time.sleep(5 + random.uniform(0, 2))
             else:
-                self.logger.info("No new receipt emails")
+                self.logger.info("No new emails found in primary inbox.")
 
             self.logger.info("=" * 70)
             self.logger.info("CYCLE COMPLETE")

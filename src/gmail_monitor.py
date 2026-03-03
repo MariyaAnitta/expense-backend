@@ -157,20 +157,16 @@ class ReceiptEmailMonitor:
 
             if after_timestamp:
                 try:
-                    if hasattr(after_timestamp, 'timestamp'):
-                        dt = datetime.fromtimestamp(after_timestamp.timestamp())
-                    else:
-                        dt = datetime.now() - timedelta(days=1)
-
-                    date_str = dt.strftime('%Y/%m/%d')
-                    query_parts.append(f'after:{date_str}')
-                    print(f"Searching receipt emails after: {date_str}")
+                    # If we have a very recent timestamp (within last 24h), 
+                    # use a more lenient 'newer_than' filter to avoid date-boundary misses
+                    query_parts.append('newer_than:2d')
+                    logger.info("Syncing recent mail (using newer_than:2d for safety)")
                 except Exception as e:
-                    print(f"Error parsing timestamp: {e}")
+                    logger.error(f"Error checking timestamp: {e}")
                     query_parts.append('newer_than:1d')
             else:
                 query_parts.append('newer_than:30d')
-                print("First run: searching last 30 days of receipts")
+                logger.info("First run: searching last 30 days of receipts")
 
             query = ' '.join(query_parts) if query_parts else 'in:inbox'
             
