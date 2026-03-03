@@ -70,7 +70,7 @@ class FirebaseClient:
                 'description': f"{transaction_data.get('transaction_type', 'transaction')} - {transaction_data.get('merchant')}",
                 'confidence': 0.95,
                 'gmail_message_id': gmail_message_id,
-                'card_last_4': transaction_data.get('card_last_4'),
+                'card_details': transaction_data.get('card_last_4') or transaction_data.get('card_details'),
                 'transaction_type': transaction_data.get('transaction_type'),
                 'bank': transaction_data.get('bank'),
                 'account_holder': transaction_data.get('account_holder'),
@@ -154,6 +154,7 @@ class FirebaseClient:
                 'merchant': expense_data.get('merchant_name', 'Unknown').upper(),
                 'amount': float(expense_data.get('total_amount', 0)),
                 'bank': expense_data.get('bank', 'Other'),
+                'card_details': expense_data.get('card_details'), # Captured from documents
                 'currency': expense_data.get('currency', 'INR'),
                 'date': expense_data.get('date'),
                 'cat': cat,

@@ -95,7 +95,9 @@ Extract the following fields in JSON format:
     "items": ["list of items bought"],
     "tax_amount": numeric tax value or null,
     "main_category": "Business or Personal",
-    "payment_method": "Card/Cash/UPI/etc"
+    "payment_method": "Card/Cash/UPI/etc",
+    "card_details": "last 4 digits or card network (e.g., VISA 1234) if visible, otherwise null",
+    "bank": "Bank name if mentioned on receipt, otherwise null"
 }
 
 2. THE MOBILITY LEDGER (Travel Logs)
