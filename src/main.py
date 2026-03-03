@@ -7,6 +7,9 @@ from logger import setup_logger
 from threading import Thread
 from flask import Flask, request, jsonify
 
+load_dotenv()
+logger = logging.getLogger('ExpenseMonitor')
+
 # ================================
 # OLD SINGLE ACCOUNT IMPORTS (DISABLED)
 # ================================
@@ -26,7 +29,6 @@ from gemini_extractor import TransactionExtractor
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 
-load_dotenv()
 
 # Create Flask app for health check (required by Render)
 app = Flask(__name__)
@@ -194,11 +196,10 @@ class ExpenseMonitor:
             self.logger.info(f"Target Account: expenseflow.10xds@gmail.com")
             self.logger.info("=" * 70)
 
-            # Check for ANY new emails (using the combined Receipt Monitor logic)
-            # This handles both plain text alerts and forwarded attachments
-            last_sync_ts = self.firebase.get_last_processed_timestamp(source_filter='forwarded_email')
-            
             self.logger.info(f"Checking for new emails...")
+            last_sync_ts = self.firebase.get_last_processed_timestamp(source_filter='forwarded_email')
+            self.logger.info(f"Last processed timestamp from DB: {last_sync_ts}")
+            
             receipt_emails = self.receipt_monitor.fetch_new_receipts(
                 after_timestamp=last_sync_ts
             )
@@ -226,6 +227,7 @@ class ExpenseMonitor:
                         # If AI fails, still log it so we don't try again (optional)
                         self.logger.warning(f"Failed or skipped extracting from {email['message_id']}")
                     
+
                     # Prevent 429
                     import time
                     import random

@@ -153,6 +153,14 @@ class ReceiptEmailMonitor:
         Every email = receipt
         """
         try:
+            # VERIFY THE ACCOUNT
+            try:
+                profile = self.service.users().getProfile(userId='me').execute()
+                email_addr = profile.get('emailAddress')
+                logger.info(f"📧 AUTHENTICATED AS: {email_addr}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not verify email address: {e}")
+
             query_parts = []
 
             if after_timestamp:
@@ -183,6 +191,13 @@ class ReceiptEmailMonitor:
             ).execute()
 
             messages = results.get('messages', [])
+            logger.info(f"Gmail Search Results: {len(messages)} messages found.")
+            
+            # If no messages found, search WITHOUT filters just once to see if account has ANY mail
+            if not messages:
+                debug_results = self.service.users().messages().list(userId='me', maxResults=5).execute()
+                debug_count = len(debug_results.get('messages', []))
+                logger.info(f"🔍 DEBUG: Any mail in account? {debug_count} found (unfiltered)")
 
             if not messages:
                 logger.info("No new receipt emails found")
@@ -290,7 +305,6 @@ class ReceiptEmailMonitor:
             with open(path, 'wb') as f:
                 f.write(data)
             
-            logger.info(f"📎 Downloaded attachment: {filename}")
             return path
         except Exception as e:
             logger.error(f"Failed to download attachment {filename}: {e}")
