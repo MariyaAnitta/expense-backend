@@ -173,7 +173,12 @@ class ReceiptEmailMonitor:
                 print("First run: searching last 30 days of receipts")
 
             query = ' '.join(query_parts) if query_parts else 'in:inbox'
-            logger.info(f"Searching receipts Gmail: {query}")
+            
+            # Ensure we ALWAYS search in the inbox for the receipts account
+            if 'in:inbox' not in query:
+                query = f"in:inbox {query}"
+                
+            logger.info(f"Final Receipts Search Query: {query}")
 
             results = self.service.users().messages().list(
                 userId='me',

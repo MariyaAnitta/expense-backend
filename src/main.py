@@ -196,15 +196,18 @@ class ExpenseMonitor:
             self.logger.info(f"STARTING MONITORING CYCLE - {current_time}")
             self.logger.info("=" * 70)
 
-            last_timestamp = self.firebase.get_last_processed_timestamp()
-
-            # === ACCOUNT 1: TRANSACTIONS ===
+            # === ACCOUNT 1: TRANSACTIONS (Personal) ===
             self.logger.info("\n[1/2] Checking Personal Gmail for transaction alerts...")
+            last_alert_ts = self.firebase.get_last_processed_timestamp(source_filter='gmail_alert')
             transaction_emails = self.transaction_monitor.fetch_new_transactions(
-                after_timestamp=last_timestamp
+                after_timestamp=last_alert_ts
             )
 
             if transaction_emails:
+                # We need to ensure these are saved with the correct source
+                for email in transaction_emails:
+                    email['source'] = 'gmail_alert'
+                
                 transactions = self.extractor.extract_batch(transaction_emails)
                 if transactions:
                     results = self.firebase.save_batch(transactions)
@@ -215,10 +218,11 @@ class ExpenseMonitor:
             else:
                 self.logger.info("No new transaction emails")
 
-            # === ACCOUNT 2: RECEIPTS ===
+            # === ACCOUNT 2: RECEIPTS (Forwarded) ===
             self.logger.info("\n[2/2] Checking Receipts Gmail for forwarded receipts...")
+            last_receipt_ts = self.firebase.get_last_processed_timestamp(source_filter='forwarded_email')
             receipt_emails = self.receipt_monitor.fetch_new_receipts(
-                after_timestamp=last_timestamp
+                after_timestamp=last_receipt_ts
             )
 
             if receipt_emails:
@@ -235,8 +239,8 @@ class ExpenseMonitor:
                         extracted_data['gmail_message_id'] = email['message_id']
                         extracted_data['email_subject'] = email['subject']
                         extracted_data['email_sender'] = email['sender']
-                        extracted_data['source'] = 'forwarded_email'
-                        extracted_data['user_id'] = os.getenv('GMAIL_RECEIPTS_USER') # Identify the account
+                        extracted_data['source'] = 'forwarded_email' # EXPLICIT SOURCE
+                        extracted_data['user_id'] = os.getenv('GMAIL_RECEIPTS_USER')
                         
                         # Save to Firebase (handles both ledgers internally)
                         self.firebase.save_telegram_receipt(extracted_data)

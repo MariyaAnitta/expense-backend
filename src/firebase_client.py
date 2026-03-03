@@ -65,8 +65,8 @@ class FirebaseClient:
                 'currency': transaction_data.get('currency', 'INR'),
                 'date': transaction_data.get('date'),
                 'time': transaction_data.get('time'),
-                'category': transaction_data.get('bank'),
-                'source': 'email',
+                'category': transaction_data.get('bank'), # This seems like a bug, should be 'category'
+                'source': transaction_data.get('source', 'gmail_alert'), # Default changed to gmail_alert
                 'description': f"{transaction_data.get('transaction_type', 'transaction')} - {transaction_data.get('merchant')}",
                 'confidence': 0.95,
                 'gmail_message_id': gmail_message_id,
@@ -140,6 +140,12 @@ class FirebaseClient:
         Save Telegram receipt expense to Firestore
         """
         try:
+            # CHECK FOR DUPLICATES FIRST (by Gmail message ID if available)
+            gmail_message_id = expense_data.get('gmail_message_id')
+            if gmail_message_id and self.transaction_exists(gmail_message_id):
+                print(f"⚠️ Receipt already exists (Message ID: {gmail_message_id[:20]}...)")
+                return {'success': False, 'error': 'duplicate'}
+
             # Standardize category name as 'cat' for consistency with Financial Ledger
             cat = expense_data.get('category', 'General')
             if cat == 'Food': cat = 'Meals' # Map to required categories
@@ -151,7 +157,7 @@ class FirebaseClient:
                 'currency': expense_data.get('currency', 'INR'),
                 'date': expense_data.get('date'),
                 'cat': cat,
-                'source': 'telegram',
+                'source': expense_data.get('source', 'telegram'), # Use source from expense_data if available
                 'items': expense_data.get('items', []),
                 'payment_method': expense_data.get('payment_method'),
                 'tax_amount': expense_data.get('tax_amount'),
@@ -166,6 +172,7 @@ class FirebaseClient:
                 'paid_by': expense_data.get('paid_by'),
                 'notes': expense_data.get('notes'),
                 'user_id': expense_data.get('user_id'), # New field for privacy
+                'gmail_message_id': expense_data.get('gmail_message_id'), # CRITICAL for duplicate detection
                 
                 'created_at': firestore.SERVER_TIMESTAMP
             }
@@ -266,11 +273,18 @@ class FirebaseClient:
             print(f"❌ Error fetching reconciliations: {e}")
             return []
     
-    def get_last_processed_timestamp(self):
-        """Get the timestamp of most recently processed email"""
+    def get_last_processed_timestamp(self, source_filter=None):
+        """
+        Get the timestamp of most recently processed email.
+        Optional source_filter: e.g. 'gmail_alert' or 'forwarded_email'
+        """
         try:
-            docs = self.db.collection('expenses') \
-                .order_by('created_at', direction=firestore.Query.DESCENDING) \
+            query = self.db.collection('expenses')
+            
+            if source_filter:
+                query = query.where('source', '==', source_filter)
+                
+            docs = query.order_by('created_at', direction=firestore.Query.DESCENDING) \
                 .limit(1) \
                 .stream()
             
