@@ -122,7 +122,12 @@ Context Rule:
 - If the document mentions a hotel stay, prioritize "Lodging" even if food is listed.
 - If it's a flight, it's ALWAYS "Transport".
 
-Return ONLY a single valid JSON object combining both. If no mobility data is found, "is_mobility" should be false.
+Return ONLY a single valid JSON object combining both. 
+
+CRITICAL RULES:
+1. If no data is found in the text or images, return an empty object {} or set the relevant fields to null.
+2. DO NOT hallucinate. DO NOT use example names like 'John Doe', 'Jane Smith', 'The Grand Hotel', or 'Uber' unless they actually appear in the document.
+3. If no mobility data is found, "is_mobility" should be false.
 """
             
             # Combine parts for Gemini

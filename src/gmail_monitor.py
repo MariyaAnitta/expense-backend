@@ -231,22 +231,31 @@ class ReceiptEmailMonitor:
         """Recursively extract and download attachments from email payload"""
         attachments = []
         
-        # Log the mimeType of this part to help debug
         mime_type = payload.get('mimeType', 'unknown')
         filename = payload.get('filename', '')
-        # print(f"  🔍 Checking part: {mime_type} (file: {filename})")
+        part_id = payload.get('partId', '0')
+        
+        # Log structure for debugging
+        print(f"  [DEBUG] Email Part {part_id}: Mime={mime_type}, Filename='{filename}'")
 
+        # Check for nested parts FIRST
         if 'parts' in payload:
             for part in payload['parts']:
-                # Handle nested parts (recursive)
                 attachments.extend(self._get_attachments(message_id, part))
         
-        # Check if THIS part is an attachment
+        # Then check if CURRENT part is a useful attachment
         if filename:
-            mime_type = payload.get('mimeType', '')
-            # We only care about images and PDFs
-            if any(t in mime_type for t in ['image', 'pdf']):
-                attachment_id = payload['body'].get('attachmentId')
+            # We care about images and PDFs
+            is_valid_type = any(t in mime_type.lower() for t in ['image', 'pdf'])
+            
+            # Special case: octet-stream might be a PDF/Image if filename says so
+            if not is_valid_type and 'octet-stream' in mime_type.lower():
+                if any(ext in filename.lower() for ext in ['.pdf', '.jpg', '.jpeg', '.png']):
+                    is_valid_type = True
+                    print(f"  [DEBUG] Found octet-stream attachment that looks like a valid file: {filename}")
+
+            if is_valid_type:
+                attachment_id = payload.get('body', {}).get('attachmentId')
                 if attachment_id:
                     file_path = self._download_attachment(message_id, attachment_id, filename)
                     if file_path:
@@ -256,7 +265,7 @@ class ReceiptEmailMonitor:
                             'mime_type': mime_type
                         })
                 else:
-                    print(f"  ⚠️ Part has filename '{filename}' but no attachmentId")
+                    print(f"  ⚠️ Part has filename '{filename}' but no attachmentId in body")
         
         return attachments
 
