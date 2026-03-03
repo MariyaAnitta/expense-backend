@@ -186,16 +186,20 @@ Return ONLY a single valid JSON object combining both. If no mobility data is fo
             if not result_text:
                 return {"error": "Failed to get response from AI after retries"}
             
-            # Clean markdown
-            if result_text.startswith('```'):
-                result_text = result_text.split('```')[1]
-                if result_text.startswith('json'):
-                    result_text = result_text[4:]
+            # Clean markdown and extract JSON
+            import re
+            json_match = re.search(r'\{.*\}', result_text.strip(), re.DOTALL)
+            if json_match:
+                result_text = json_match.group(0)
             
-            data = json.loads(result_text.strip())
-            
-            logger.info(f"✅ Extracted: {data.get('merchant_name')} - {data.get('currency')} {data.get('total_amount')}")
-            return data
+            try:
+                data = json.loads(result_text)
+                logger.info(f"✅ Extracted: {data.get('merchant_name')} - {data.get('currency')} {data.get('total_amount')}")
+                return data
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Failed to parse AI response as JSON: {e}")
+                logger.error(f"Raw response: {result_text}")
+                return {"error": "Invalid JSON format from AI"}
             
         except Exception as e:
             logger.error(f"❌ Error in advanced extraction: {e}")
