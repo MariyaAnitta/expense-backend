@@ -259,9 +259,6 @@ class ReceiptEmailMonitor:
                     print(f"  ⚠️ Part has filename '{filename}' but no attachmentId")
         
         return attachments
-                                    'mime_type': mime_type
-                                })
-        return attachments
 
     def _download_attachment(self, message_id, attachment_id, filename):
         """Download a single attachment to temp folder"""
