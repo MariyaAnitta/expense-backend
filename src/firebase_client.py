@@ -76,6 +76,7 @@ class FirebaseClient:
                 'account_holder': transaction_data.get('account_holder'),
                 'email_subject': transaction_data.get('email_subject'),
                 'email_sender': transaction_data.get('email_sender'),
+                'user_id': 'SHARED_POOL',
                 'created_at': firestore.SERVER_TIMESTAMP
             }
             
@@ -172,7 +173,7 @@ class FirebaseClient:
                 'reimbursement_status': expense_data.get('reimbursement_status'),
                 'paid_by': expense_data.get('paid_by'),
                 'notes': expense_data.get('notes'),
-                'user_id': expense_data.get('user_id'), # New field for privacy
+                'user_id': 'SHARED_POOL', # Shared pool for finance team
                 'gmail_message_id': expense_data.get('gmail_message_id'), # CRITICAL for duplicate detection
                 
                 'created_at': firestore.SERVER_TIMESTAMP
@@ -209,7 +210,7 @@ class FirebaseClient:
                 'end_date': mobility_data.get('end_date'), # Return/Check-out
                 'pnr': mobility_data.get('pnr') or mobility_data.get('booking_id'),
                 'guest_name': mobility_data.get('guest_name'),
-                'user_id': user_id or mobility_data.get('user_id'),
+                'user_id': 'SHARED_POOL',
                 'amount': float(mobility_data.get('total_amount', 0)),
                 'currency': mobility_data.get('currency', 'INR'),
                 'source': mobility_data.get('source', 'unknown'),

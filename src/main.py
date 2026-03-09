@@ -219,7 +219,7 @@ class ExpenseMonitor:
                         extracted_data['email_subject'] = email['subject']
                         extracted_data['email_sender'] = email['sender']
                         extracted_data['source'] = 'forwarded_email' # Marker for indexing
-                        extracted_data['user_id'] = os.getenv('GMAIL_RECEIPTS_USER')
+                        extracted_data['user_id'] = "SHARED_POOL"
                         
                         # Save to Firebase
                         self.firebase.save_telegram_receipt(extracted_data)
