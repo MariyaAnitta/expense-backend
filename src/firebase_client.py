@@ -103,7 +103,7 @@ class FirebaseClient:
             Dictionary with 'is_duplicate' (bool) and 'existing_receipt' (doc data if found)
         """
         try:
-            docs = self.db.collection('telegram_receipts') \
+            docs = self.db.collection('expenses') \
                 .where('merchant', '==', merchant.upper()) \
                 .where('amount', '==', float(amount)) \
                 .where('date', '==', date) \
