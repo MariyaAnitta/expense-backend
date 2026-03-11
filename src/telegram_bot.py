@@ -95,16 +95,20 @@ async def process_next_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     amount = expense_data.get('total_amount', 0)
     currency = expense_data.get('currency', 'INR')
     date = expense_data.get('date', 'Unknown')
+    items = expense_data.get('items', [])
+    
+    items_text = ""
+    if items and isinstance(items, list):
+        items_text = "\n🛒 Items:\n" + "\n".join([f"• {str(item).title()}" for item in items])
 
     await update.message.reply_text(
-        f"""✅ Receipt Extracted!
-
-🏪 Merchant: {merchant.upper()}
-💰 Amount: {currency} {amount}
-📅 Date: {date}
-
-Is this Personal or Business?
-Reply P or B"""
+        f"✅ Receipt Extracted!\n\n"
+        f"🏪 Merchant: {merchant.upper()}\n"
+        f"💰 Amount: {currency} {amount}\n"
+        f"📅 Date: {date}"
+        f"{items_text}\n\n"
+        f"Is this Personal or Business?\n"
+        f"Reply P or B"
     )
     return WAITING_FOR_CATEGORY
 

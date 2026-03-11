@@ -174,8 +174,13 @@ def wa_process_next_receipt(sender_id):
     amount = expense_data.get('total_amount', 0)
     currency = expense_data.get('currency', 'INR')
     date = expense_data.get('date', 'Unknown')
+    items = expense_data.get('items', [])
+    
+    items_text = ""
+    if items and isinstance(items, list):
+        items_text = "\n🛒 Items:\n" + "\n".join([f"• {str(item).title()}" for item in items])
 
-    text = f"✅ Receipt Extracted!\n\n🏪 Merchant: {merchant.upper()}\n💰 Amount: {currency} {amount}\n📅 Date: {date}\n\nIs this Personal or Business?\nReply P or B"
+    text = f"✅ Receipt Extracted!\n\n🏪 Merchant: {merchant.upper()}\n💰 Amount: {currency} {amount}\n📅 Date: {date}{items_text}\n\nIs this Personal or Business?\nReply P or B"
     send_whatsapp_message(sender_id, text)
 
 @app.route("/whatsapp/webhook", methods=["POST"])
