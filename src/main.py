@@ -25,12 +25,20 @@ from gmail_auth_dual import (
 )
 from gmail_monitor import GmailMonitor, ReceiptEmailMonitor
 
+import requests
+
 from gemini_extractor import TransactionExtractor
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
 
 
-# Create Flask app for health check (required by Render)
+# === WHATSAPP CREDENTIALS ===
+WA_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN")
+WA_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+WA_VERSION = os.getenv("WHATSAPP_API_VERSION", "v22.0")
+WA_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "shared_finance_pool_verify_token")
+
+# Create Flask app for health check (required by Render) and Webhooks
 app = Flask(__name__)
 
 @app.route('/')
@@ -64,6 +72,96 @@ def get_reconciliations():
         return jsonify({"success": True, "reports": reports}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+# ==========================================
+# WHATSAPP WEBHOOK ENDPOINTS
+# ==========================================
+
+def send_whatsapp_message(to, text):
+    """Send a simple text message via WhatsApp"""
+    url = f"https://graph.facebook.com/{WA_VERSION}/{WA_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WA_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}}
+    try:
+        requests.post(url, headers=headers, json=data)
+    except Exception as e:
+        logger.error(f"WhatsApp text send error: {e}")
+
+def download_whatsapp_media(media_id):
+    """Download media from WhatsApp"""
+    try:
+        url = f"https://graph.facebook.com/{WA_VERSION}/{media_id}"
+        headers = {"Authorization": f"Bearer {WA_ACCESS_TOKEN}"}
+        res = requests.get(url, headers=headers).json()
+        media_url = res.get("url")
+        if not media_url: return None
+            
+        res = requests.get(media_url, headers=headers)
+        file_path = f"temp/whatsapp_{media_id}.jpg"
+        os.makedirs("temp", exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(res.content)
+        return file_path
+    except Exception as e:
+        logger.error(f"WhatsApp media download error: {e}")
+        return None
+
+@app.route("/whatsapp/webhook", methods=["GET"])
+def verify_whatsapp_webhook():
+    """Verify webhook with Meta"""
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    if mode == "subscribe" and token == WA_VERIFY_TOKEN:
+        logger.info("✅ WhatsApp Webhook Verified")
+        return challenge, 200
+    return "Verification failed", 403
+
+@app.route("/whatsapp/webhook", methods=["POST"])
+def handle_whatsapp_webhook():
+    """Handle incoming messages and images from WhatsApp"""
+    data = request.get_json()
+    try:
+        entry = data.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        message = value.get("messages", [{}])[0]
+        if not message: return jsonify({"status": "no message"}), 200
+            
+        sender_id = message.get("from")
+        msg_type = message.get("type")
+        
+        if msg_type == "image":
+            image_id = message["image"]["id"]
+            send_whatsapp_message(sender_id, "⏳ Processing your receipt...")
+            
+            file_path = download_whatsapp_media(image_id)
+            if file_path:
+                extractor = ReceiptExtractor()
+                expense_data = extractor.extract_expense_from_receipt(file_path)
+                
+                if "error" not in expense_data:
+                    expense_data["source"] = "whatsapp"
+                    expense_data["user_id"] = "SHARED_POOL"
+                    FirebaseClient().save_telegram_receipt(expense_data, telegram_user_id=f"wa_{sender_id}")
+                    
+                    merchant = expense_data.get('merchant_name', 'Unknown')
+                    amount = expense_data.get('total_amount', 0)
+                    currency = expense_data.get('currency', 'INR')
+                    send_whatsapp_message(sender_id, f"✅ Saved: {merchant} ({currency} {amount}) to Shared Pool.")
+                else:
+                    send_whatsapp_message(sender_id, "❌ Sorry, I couldn't read that receipt.")
+        elif msg_type == "text":
+            send_whatsapp_message(sender_id, "👋 Welcome to ExpenseFlow! Send me a photo of a receipt to get started.")
+            
+    except Exception as e:
+        logger.error(f"❌ WhatsApp Webhook Error: {e}")
+        
+    return jsonify({"status": "ok"}), 200
+
 
 def run_flask():
     """Run Flask server in background thread"""
