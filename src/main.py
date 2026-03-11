@@ -74,8 +74,12 @@ def get_reconciliations():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ==========================================
-# WHATSAPP WEBHOOK ENDPOINTS
+# WHATSAPP WEBHOOK ENDPOINTS & CONVERSATION
 # ==========================================
+
+# Simple memory storage for WhatsApp conversation state
+wa_pending_queues = {}
+wa_user_data = {}
 
 def send_whatsapp_message(to, text):
     """Send a simple text message via WhatsApp"""
@@ -89,6 +93,44 @@ def send_whatsapp_message(to, text):
         requests.post(url, headers=headers, json=data)
     except Exception as e:
         logger.error(f"WhatsApp text send error: {e}")
+
+def send_whatsapp_interactive_buttons(to, body_text, buttons):
+    """Send interactive buttons via WhatsApp"""
+    url = f"https://graph.facebook.com/{WA_VERSION}/{WA_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WA_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    
+    # Format buttons for API (max 3 allowed per message by Meta)
+    # We will chunk them if > 3, but for now we have 4 bank options, which requires a List message ideally.
+    # Alternatively, we can use 3 categories. Meta only allows 3 buttons in an interactive message.
+    # We will send 3 buttons: Amex, Citi, Other.
+    formatted_buttons = []
+    for btn_id, btn_title in buttons[:3]:
+        formatted_buttons.append({
+            "type": "reply",
+            "reply": {
+                "id": btn_id,
+                "title": btn_title[:20] # Max 20 chars
+            }
+        })
+
+    data = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body_text},
+            "action": {"buttons": formatted_buttons}
+        }
+    }
+    
+    try:
+        requests.post(url, headers=headers, json=data)
+    except Exception as e:
+        logger.error(f"WhatsApp interactive send error: {e}")
 
 def download_whatsapp_media(media_id):
     """Download media from WhatsApp"""
@@ -120,6 +162,22 @@ def verify_whatsapp_webhook():
         return challenge, 200
     return "Verification failed", 403
 
+def wa_process_next_receipt(sender_id):
+    """Start conversation for the next receipt in queue"""
+    if sender_id not in wa_pending_queues or not wa_pending_queues[sender_id]:
+        return
+        
+    expense_data = wa_pending_queues[sender_id][0]
+    wa_user_data[sender_id] = {'expense': expense_data, 'state': 'WAITING_FOR_CATEGORY'}
+
+    merchant = expense_data.get('merchant_name', 'Unknown')
+    amount = expense_data.get('total_amount', 0)
+    currency = expense_data.get('currency', 'INR')
+    date = expense_data.get('date', 'Unknown')
+
+    text = f"✅ Receipt Extracted!\n\n🏪 Merchant: {merchant.upper()}\n💰 Amount: {currency} {amount}\n📅 Date: {date}\n\nIs this Personal or Business?\nReply P or B"
+    send_whatsapp_message(sender_id, text)
+
 @app.route("/whatsapp/webhook", methods=["POST"])
 def handle_whatsapp_webhook():
     """Handle incoming messages and images from WhatsApp"""
@@ -134,8 +192,54 @@ def handle_whatsapp_webhook():
         sender_id = message.get("from")
         msg_type = message.get("type")
         
+        # --- Handle Button Clicks (Interactive Reply) ---
+        if msg_type == "interactive":
+            btn_id = message["interactive"]["button_reply"]["id"]
+            user_session = wa_user_data.get(sender_id)
+            
+            if user_session and user_session['state'] == 'WAITING_FOR_BANK':
+                bank_name = btn_id.replace('bank_', '')
+                expense_data = user_session['expense']
+                expense_data['bank'] = bank_name
+                expense_data['source'] = 'whatsapp'
+                expense_data['user_id'] = 'SHARED_POOL'
+                
+                # Check duplicates right before saving
+                merchant = expense_data.get('merchant_name', 'Unknown')
+                amount = expense_data.get('total_amount', 0)
+                date = expense_data.get('date')
+                telegram_id = f"wa_{sender_id}" # Maps to telegram_user_id in DB
+                
+                db = FirebaseClient()
+                dup_check = db.check_duplicate_receipt(merchant, amount, date, telegram_id)
+                
+                if dup_check.get('is_duplicate'):
+                    send_whatsapp_message(sender_id, f"⚠️ Duplicate Receipt Detected.\nThis receipt from {merchant} ({amount}) on {date} is already in the system.")
+                else:
+                    save_result = db.save_telegram_receipt(expense_data, telegram_user_id=telegram_id)
+                    currency = expense_data.get('currency', 'INR')
+                    if save_result.get('success'):
+                        send_whatsapp_message(sender_id, f"✅ Complete!\n\n🏪 {merchant.upper()}\n💰 {currency} {amount}\n💳 Bank: {bank_name}\n📝 Saved to Forensic Audit pool.")
+                    else:
+                        send_whatsapp_message(sender_id, "❌ Error saving receipt to ledger.")
+                
+                # Clean up queue and move to next
+                wa_pending_queues[sender_id].pop(0)
+                del wa_user_data[sender_id]
+                
+                if wa_pending_queues[sender_id]:
+                    wa_process_next_receipt(sender_id)
+                else:
+                    send_whatsapp_message(sender_id, "🎉 All receipts processed!")
+            return jsonify({"status": "ok"}), 200
+
+        # --- Handle Image Receipts ---
         if msg_type == "image":
             image_id = message["image"]["id"]
+            
+            if sender_id not in wa_pending_queues:
+                wa_pending_queues[sender_id] = []
+                
             send_whatsapp_message(sender_id, "⏳ Processing your receipt...")
             
             file_path = download_whatsapp_media(image_id)
@@ -144,21 +248,76 @@ def handle_whatsapp_webhook():
                 expense_data = extractor.extract_expense_from_receipt(file_path)
                 
                 if "error" not in expense_data:
-                    expense_data["source"] = "whatsapp"
-                    expense_data["user_id"] = "SHARED_POOL"
-                    FirebaseClient().save_telegram_receipt(expense_data, telegram_user_id=f"wa_{sender_id}")
+                    wa_pending_queues[sender_id].append(expense_data)
                     
-                    merchant = expense_data.get('merchant_name', 'Unknown')
-                    amount = expense_data.get('total_amount', 0)
-                    currency = expense_data.get('currency', 'INR')
-                    send_whatsapp_message(sender_id, f"✅ Saved: {merchant} ({currency} {amount}) to Shared Pool.")
+                    if len(wa_pending_queues[sender_id]) == 1:
+                        wa_process_next_receipt(sender_id)
+                    else:
+                        send_whatsapp_message(sender_id, "📸 Received another receipt! Will process next.")
                 else:
-                    send_whatsapp_message(sender_id, "❌ Sorry, I couldn't read that receipt.")
+                    send_whatsapp_message(sender_id, f"❌ Sorry, I couldn't read that receipt:\n{expense_data['error']}")
+                    
+        # --- Handle Text Conversation ---
         elif msg_type == "text":
-            send_whatsapp_message(sender_id, "👋 Welcome to ExpenseFlow! Send me a photo of a receipt to get started.")
+            text = message["text"]["body"].strip().upper()
+            user_session = wa_user_data.get(sender_id)
             
+            # If no active conversation, show welcome
+            if not user_session:
+                send_whatsapp_message(sender_id, "👋 Welcome to ExpenseFlow Bot!\nHow to use:\n1️⃣ Send receipt photo(s)\n2️⃣ Reply: P (Personal) or B (Business)\n3️⃣ Answer questions\nJust send a photo to get started! 📸")
+                return jsonify({"status": "ok"}), 200
+                
+            state = user_session['state']
+            expense = user_session['expense']
+            
+            if state == 'WAITING_FOR_CATEGORY':
+                if text in ['P', 'PERSONAL']:
+                    expense['main_category'] = 'Personal'
+                    expense['reimbursement_status'] = 'Not Applicable'
+                    expense['company_project'] = 'Personal'
+                    expense['paid_by'] = 'Employee'
+                    user_session['state'] = 'WAITING_FOR_NOTES'
+                    send_whatsapp_message(sender_id, "📝 Add notes (or reply 'skip'):")
+                elif text in ['B', 'BUSINESS']:
+                    expense['main_category'] = 'Business'
+                    expense['paid_by'] = 'Employee'
+                    user_session['state'] = 'WAITING_FOR_REIMBURSEMENT'
+                    send_whatsapp_message(sender_id, "💼 Business Expense\n\nWill you be reimbursed?\nReply: Y (Yes) or N (No)")
+                else:
+                    send_whatsapp_message(sender_id, "⚠️ Please reply P (Personal) or B (Business)")
+                    
+            elif state == 'WAITING_FOR_REIMBURSEMENT':
+                if text in ['Y', 'YES']:
+                    expense['reimbursement_status'] = 'Pending'
+                    user_session['state'] = 'WAITING_FOR_PROJECT'
+                    send_whatsapp_message(sender_id, "🏢 Which project/company?\n(or reply 'skip')")
+                elif text in ['N', 'NO']:
+                    expense['reimbursement_status'] = 'Not Needed'
+                    expense['company_project'] = 'Company Paid'
+                    user_session['state'] = 'WAITING_FOR_NOTES'
+                    send_whatsapp_message(sender_id, "📝 Add notes (or reply 'skip'):")
+                else:
+                    send_whatsapp_message(sender_id, "⚠️ Please reply Y (Yes) or N (No)")
+                    
+            elif state == 'WAITING_FOR_PROJECT':
+                expense['company_project'] = text if text != 'SKIP' else 'Not Specified'
+                user_session['state'] = 'WAITING_FOR_NOTES'
+                send_whatsapp_message(sender_id, "📝 Add notes (or reply 'skip'):")
+                
+            elif state == 'WAITING_FOR_NOTES':
+                expense['notes'] = text if text not in ['DONE', 'SKIP'] else None
+                user_session['state'] = 'WAITING_FOR_BANK'
+                
+                # Ask for Bank using Interactive Buttons
+                buttons = [
+                    ('bank_Amex', 'Amex'),
+                    ('bank_Citi', 'Citi'),
+                    ('bank_Other', 'Cash / Other')
+                ]
+                send_whatsapp_interactive_buttons(sender_id, "💳 Which account did you use for this?", buttons)
+
     except Exception as e:
-        logger.error(f"❌ WhatsApp Webhook Error: {e}")
+        logger.error(f"❌ WhatsApp Webhook Error: {e}", exc_info=True)
         
     return jsonify({"status": "ok"}), 200
 
