@@ -191,6 +191,14 @@ def handle_whatsapp_webhook():
         entry = data.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
+
+        # 🔒 FILTER: Only process messages sent to OUR specific phone number
+        # Under a WABA, multiple numbers can exist. This prevents cross-number message handling.
+        incoming_phone_id = value.get("metadata", {}).get("phone_number_id")
+        if incoming_phone_id and incoming_phone_id != WA_PHONE_NUMBER_ID:
+            logger.info(f"⏭️ Ignoring message for different number: {incoming_phone_id}")
+            return jsonify({"status": "ignored"}), 200
+
         message = value.get("messages", [{}])[0]
         if not message: return jsonify({"status": "no message"}), 200
             
