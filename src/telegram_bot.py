@@ -240,20 +240,33 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     merchant = expense_data.get('merchant_name', 'Unknown')
     amount = expense_data.get('total_amount', 0)
     currency = expense_data.get('currency', 'INR')
+    date = expense_data.get('date', 'Unknown')
+    telegram_user_id = str(user_id)
     
-    save_result = firebase_client.save_telegram_receipt(
-        expense_data,
-        telegram_user_id=str(user_id)
-    )
+    # Check for duplicates before saving
+    dup_check = firebase_client.check_duplicate_receipt(merchant, amount, date, telegram_user_id)
     
-    if save_result.get('success'):
+    if dup_check.get('is_duplicate'):
         await query.edit_message_text(
-            f"✅ Complete!\n\n"
-            f"🏪 {merchant.upper()}\n"
-            f"💰 {currency} {amount}\n"
-            f"💳 Bank: {bank_name}\n"
-            f"📝 Saved to Forensic Audit pool."
+            f"⚠️ Duplicate Receipt Detected.\n"
+            f"This receipt from {merchant} ({amount}) on {date} is already in the system."
         )
+    else:
+        save_result = firebase_client.save_telegram_receipt(
+            expense_data,
+            telegram_user_id=telegram_user_id
+        )
+        
+        if save_result.get('success'):
+            await query.edit_message_text(
+                f"✅ Complete!\n\n"
+                f"🏪 {merchant.upper()}\n"
+                f"💰 {currency} {amount}\n"
+                f"💳 Bank: {bank_name}\n"
+                f"📝 Saved to Forensic Audit pool."
+            )
+        else:
+            await query.edit_message_text("❌ Error saving receipt to ledger.")
     
     # Clean up
     pending_receipt_queues[user_id].pop(0)
