@@ -16,14 +16,65 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = "https://xpenseflow-telegram-bot.onrender.com"
+# Configurable webhook URL via environment variable
+WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "https://xpenseflow-telegram-bot.onrender.com")
 
-# Initialize receipt extractor and Firebase client
-receipt_extractor = ReceiptExtractor()
-firebase_client = FirebaseClient()
+# Lazy initialized clients
+_receipt_extractor = None
+_firebase_client = None
 
+def get_receipt_extractor():
+    global _receipt_extractor
+    if _receipt_extractor is None:
+        from gemini_receipt_extractor import ReceiptExtractor
+        _receipt_extractor = ReceiptExtractor()
+    return _receipt_extractor
+
+def get_firebase_client():
+    global _firebase_client
+    if _firebase_client is None:
+        from firebase_client import FirebaseClient
+        _firebase_client = FirebaseClient()
+    return _firebase_client
 # Create Flask app for webhook
 app = Flask(__name__)
+
+# Global application instance (initialized once)
+_telegram_app = None
+_app_lock = asyncio.Lock()
+
+async def get_application():
+    """Get or build the global telegram application instance"""
+    global _telegram_app
+    async with _app_lock:
+        if _telegram_app is None:
+            persistence = PicklePersistence(filepath="bot_state.pickle")
+            _telegram_app = (
+                Application.builder()
+                .token(TELEGRAM_BOT_TOKEN)
+                .persistence(persistence)
+                .build()
+            )
+            
+            _telegram_app.add_handler(CommandHandler("start", start_command))
+            
+            conv_handler = ConversationHandler(
+                entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
+                states={
+                    WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
+                    WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
+                    WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
+                    WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
+                    WAITING_FOR_BANK: [CallbackQueryHandler(handle_bank)]
+                },
+                fallbacks=[],
+                name="receipt_conversation",
+                persistent=True
+            )
+            _telegram_app.add_handler(conv_handler)
+            await _telegram_app.initialize()
+            # Bot should NOT be started here, just initialized
+        return _telegram_app
 
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES, WAITING_FOR_BANK = range(5)
@@ -64,7 +115,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
 
-        expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
+        extractor = get_receipt_extractor()
+        expense_data = extractor.extract_expense_from_receipt(file_path)
 
         if expense_data.get('error'):
             await update.message.reply_text(
@@ -248,7 +300,8 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_user_id = str(user_id)
     
     # Check for duplicates before saving
-    dup_check = firebase_client.check_duplicate_receipt(merchant, amount, date, telegram_user_id)
+    db = get_firebase_client()
+    dup_check = db.check_duplicate_receipt(merchant, amount, date, telegram_user_id)
     
     if dup_check.get('is_duplicate'):
         await query.edit_message_text(
@@ -256,7 +309,7 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"This receipt from {merchant} ({amount}) on {date} is already in the system."
         )
     else:
-        save_result = firebase_client.save_telegram_receipt(
+        save_result = db.save_telegram_receipt(
             expense_data,
             telegram_user_id=telegram_user_id
         )
@@ -324,21 +377,20 @@ def build_application():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Handle incoming webhook updates"""
+    """Handle incoming updates"""
     try:
         json_data = request.get_json(force=True)
+        if not json_data:
+            return jsonify({"ok": False, "error": "No data"}), 400
 
+        # Run async logic using a dedicated event loop or the current one
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
+        
         try:
-            application = build_application()
-            loop.run_until_complete(application.initialize())
-
+            application = loop.run_until_complete(get_application())
             update = Update.de_json(json_data, application.bot)
             loop.run_until_complete(application.process_update(update))
-
-            loop.run_until_complete(application.shutdown())
         finally:
             loop.close()
 
@@ -346,7 +398,7 @@ def webhook():
 
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}", exc_info=True)
-        return jsonify({"ok": False}), 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 def init_bot():
     """Set webhook on startup - with retry"""
@@ -359,8 +411,10 @@ def init_bot():
 
             try:
                 bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                webhook_path = f"{WEBHOOK_URL}/webhook"
+                logger.info(f"Setting webhook to: {webhook_path}")
                 loop.run_until_complete(bot.set_webhook(
-                    f"{WEBHOOK_URL}/webhook",
+                    webhook_path,
                     read_timeout=30,
                     write_timeout=30,
                     connect_timeout=30
