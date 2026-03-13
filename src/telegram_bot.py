@@ -39,42 +39,36 @@ def get_firebase_client():
 # Create Flask app for webhook
 app = Flask(__name__)
 
-# Global application instance (initialized once)
-_telegram_app = None
-_app_lock = asyncio.Lock()
+# Global persistence instance (reused)
+_persistence = PicklePersistence(filepath="bot_state.pickle")
 
-async def get_application():
-    """Get or build the global telegram application instance"""
-    global _telegram_app
-    async with _app_lock:
-        if _telegram_app is None:
-            persistence = PicklePersistence(filepath="bot_state.pickle")
-            _telegram_app = (
-                Application.builder()
-                .token(TELEGRAM_BOT_TOKEN)
-                .persistence(persistence)
-                .build()
-            )
-            
-            _telegram_app.add_handler(CommandHandler("start", start_command))
-            
-            conv_handler = ConversationHandler(
-                entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
-                states={
-                    WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
-                    WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
-                    WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
-                    WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
-                    WAITING_FOR_BANK: [CallbackQueryHandler(handle_bank)]
-                },
-                fallbacks=[],
-                name="receipt_conversation",
-                persistent=True
-            )
-            _telegram_app.add_handler(conv_handler)
-            await _telegram_app.initialize()
-            # Bot should NOT be started here, just initialized
-        return _telegram_app
+def build_application():
+    """Build a fresh application instance for each request"""
+    app_instance = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .persistence(_persistence)
+        .build()
+    )
+    
+    app_instance.add_handler(CommandHandler("start", start_command))
+    
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
+        states={
+            WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
+            WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
+            WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
+            WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
+            WAITING_FOR_BANK: [CallbackQueryHandler(handle_bank)]
+        },
+        fallbacks=[],
+        name="receipt_conversation",
+        persistent=True
+    )
+    
+    app_instance.add_handler(conv_handler)
+    return app_instance
 
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES, WAITING_FOR_BANK = range(5)
@@ -383,14 +377,21 @@ def webhook():
         if not json_data:
             return jsonify({"ok": False, "error": "No data"}), 400
 
-        # Run async logic using a dedicated event loop or the current one
+        # Create a dedicated event loop for this request
+        # Re-building the app locally avoids the 'Event loop is closed' error
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         try:
-            application = loop.run_until_complete(get_application())
+            application = build_application()
+            loop.run_until_complete(application.initialize())
+            
             update = Update.de_json(json_data, application.bot)
             loop.run_until_complete(application.process_update(update))
+            
+            # Use small delay to ensure all nested tasks finish if needed
+            # but usually PTB handles its own shutdown cleanly below
+            loop.run_until_complete(application.shutdown()) 
         finally:
             loop.close()
 
