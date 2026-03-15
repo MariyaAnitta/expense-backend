@@ -176,12 +176,12 @@ def wa_process_next_receipt(sender_id):
     date = expense_data.get('date', 'Unknown')
     items = expense_data.get('items', [])
     
-    items_text = ""
-    if items and isinstance(items, list):
-        items_text = "\n🛒 Items:\n" + "\n".join([f"• {str(item).title()}" for item in items])
-
-    text = f"✅ Receipt Extracted!\n\n🏪 Merchant: {merchant.upper()}\n💰 Amount: {currency} {amount}\n📅 Date: {date}{items_text}\n\nIs this Personal or Business?\nReply P or B"
-    send_whatsapp_message(sender_id, text)
+    text = f"✅ Receipt Extracted!\n\n🏪 Merchant: {merchant.upper()}\n💰 Amount: {currency} {amount}\n📅 Date: {date}{items_text}\n\nIs this Personal or Business?"
+    buttons = [
+        ('cat_personal', 'Personal'),
+        ('cat_business', 'Business')
+    ]
+    send_whatsapp_interactive_buttons(sender_id, text, buttons)
 
 @app.route("/whatsapp/webhook", methods=["POST"])
 def handle_whatsapp_webhook():
@@ -205,45 +205,81 @@ def handle_whatsapp_webhook():
         sender_id = message.get("from")
         msg_type = message.get("type")
         
-        # --- Handle Button Clicks (Interactive Reply) ---
         if msg_type == "interactive":
             btn_id = message["interactive"]["button_reply"]["id"]
             user_session = wa_user_data.get(sender_id)
-            
-            if user_session and user_session['state'] == 'WAITING_FOR_BANK':
-                bank_name = btn_id.replace('bank_', '')
-                expense_data = user_session['expense']
-                expense_data['bank'] = bank_name
-                expense_data['source'] = 'whatsapp'
-                expense_data['user_id'] = 'SHARED_POOL'
-                
-                # Check duplicates right before saving
-                merchant = expense_data.get('merchant_name', 'Unknown')
-                amount = expense_data.get('total_amount', 0)
-                date = expense_data.get('date')
-                telegram_id = f"wa_{sender_id}" # Maps to telegram_user_id in DB
-                
-                db = FirebaseClient()
-                dup_check = db.check_duplicate_receipt(merchant, amount, date, telegram_id)
-                
-                if dup_check.get('is_duplicate'):
-                    send_whatsapp_message(sender_id, f"⚠️ Duplicate Receipt Detected.\nThis receipt from {merchant} ({amount}) on {date} is already in the system.")
-                else:
-                    save_result = db.save_telegram_receipt(expense_data, telegram_user_id=telegram_id)
-                    currency = expense_data.get('currency', 'INR')
-                    if save_result.get('success'):
-                        send_whatsapp_message(sender_id, f"✅ Complete!\n\n🏪 {merchant.upper()}\n💰 {currency} {amount}\n💳 Bank: {bank_name}\n📝 Saved to Forensic Audit pool.")
+            if user_session:
+                state = user_session['state']
+                expense = user_session['expense']
+
+                if btn_id.startswith('cat_'):
+                    category = btn_id.replace('cat_', '').title()
+                    expense['main_category'] = category
+                    if category == 'Personal':
+                        expense['reimbursement_status'] = 'Not Applicable'
+                        expense['company_project'] = 'Personal'
+                        expense['paid_by'] = 'Employee'
+                        user_session['state'] = 'WAITING_FOR_NOTES_CHOICE'
+                        send_whatsapp_interactive_buttons(sender_id, "📝 Would you like to add notes?", [('note_add', 'Add Note'), ('note_skip', 'Skip')])
                     else:
-                        send_whatsapp_message(sender_id, "❌ Error saving receipt to ledger.")
-                
-                # Clean up queue and move to next
-                wa_pending_queues[sender_id].pop(0)
-                del wa_user_data[sender_id]
-                
-                if wa_pending_queues[sender_id]:
-                    wa_process_next_receipt(sender_id)
-                else:
-                    send_whatsapp_message(sender_id, "🎉 All receipts processed!")
+                        expense['paid_by'] = 'Employee'
+                        user_session['state'] = 'WAITING_FOR_REIMBURSEMENT'
+                        send_whatsapp_interactive_buttons(sender_id, "💼 Business Expense\n\nWill you be reimbursed?", [('reimb_yes', 'Yes'), ('reimb_no', 'No')])
+
+                elif btn_id.startswith('reimb_'):
+                    status = 'Pending' if btn_id == 'reimb_yes' else 'Not Needed'
+                    expense['reimbursement_status'] = status
+                    if status == 'Pending':
+                        user_session['state'] = 'WAITING_FOR_PROJECT'
+                        send_whatsapp_message(sender_id, "🏢 Which project/company?\n(or reply 'skip')")
+                    else:
+                        expense['company_project'] = 'Company Paid'
+                        user_session['state'] = 'WAITING_FOR_NOTES_CHOICE'
+                        send_whatsapp_interactive_buttons(sender_id, "📝 Would you like to add notes?", [('note_add', 'Add Note'), ('note_skip', 'Skip')])
+
+                elif btn_id == 'note_add':
+                    user_session['state'] = 'WAITING_FOR_NOTES_TEXT'
+                    send_whatsapp_message(sender_id, "📝 Please type your notes:")
+
+                elif btn_id == 'note_skip':
+                    expense['notes'] = None
+                    user_session['state'] = 'WAITING_FOR_BANK'
+                    buttons = [('bank_Amex', 'Amex'), ('bank_Citi', 'Citi'), ('bank_Other', 'Cash / Other')]
+                    send_whatsapp_interactive_buttons(sender_id, "💳 Which account did you use for this?", buttons)
+
+                elif state == 'WAITING_FOR_BANK':
+                    bank_name = btn_id.replace('bank_', '')
+                    expense['bank'] = bank_name
+                    expense['source'] = 'whatsapp'
+                    expense['user_id'] = 'SHARED_POOL'
+                    
+                    # Check duplicates right before saving
+                    merchant = expense.get('merchant_name', 'Unknown')
+                    amount = expense.get('total_amount', 0)
+                    date = expense.get('date')
+                    telegram_id = f"wa_{sender_id}" # Maps to telegram_user_id in DB
+                    
+                    db = FirebaseClient()
+                    dup_check = db.check_duplicate_receipt(merchant, amount, date, telegram_id)
+                    
+                    if dup_check.get('is_duplicate'):
+                        send_whatsapp_message(sender_id, f"⚠️ Duplicate Receipt Detected.\nThis receipt from {merchant} ({amount}) on {date} is already in the system.")
+                    else:
+                        save_result = db.save_telegram_receipt(expense, telegram_user_id=telegram_id)
+                        currency = expense.get('currency', 'INR')
+                        if save_result.get('success'):
+                            send_whatsapp_message(sender_id, f"✅ Complete!\n\n🏪 {merchant.upper()}\n💰 {currency} {amount}\n💳 Bank: {bank_name}\n📝 Saved to Forensic Audit pool.")
+                        else:
+                            send_whatsapp_message(sender_id, "❌ Error saving receipt to ledger.")
+                    
+                    # Clean up queue and move to next
+                    wa_pending_queues[sender_id].pop(0)
+                    del wa_user_data[sender_id]
+                    
+                    if wa_pending_queues[sender_id]:
+                        wa_process_next_receipt(sender_id)
+                    else:
+                        send_whatsapp_message(sender_id, "🎉 All receipts processed!")
             return jsonify({"status": "ok"}), 200
 
         # --- Handle Image Receipts ---
@@ -283,42 +319,13 @@ def handle_whatsapp_webhook():
             state = user_session['state']
             expense = user_session['expense']
             
-            if state == 'WAITING_FOR_CATEGORY':
-                if text in ['P', 'PERSONAL']:
-                    expense['main_category'] = 'Personal'
-                    expense['reimbursement_status'] = 'Not Applicable'
-                    expense['company_project'] = 'Personal'
-                    expense['paid_by'] = 'Employee'
-                    user_session['state'] = 'WAITING_FOR_NOTES'
-                    send_whatsapp_message(sender_id, "📝 Add notes (or reply 'skip'):")
-                elif text in ['B', 'BUSINESS']:
-                    expense['main_category'] = 'Business'
-                    expense['paid_by'] = 'Employee'
-                    user_session['state'] = 'WAITING_FOR_REIMBURSEMENT'
-                    send_whatsapp_message(sender_id, "💼 Business Expense\n\nWill you be reimbursed?\nReply: Y (Yes) or N (No)")
-                else:
-                    send_whatsapp_message(sender_id, "⚠️ Please reply P (Personal) or B (Business)")
-                    
-            elif state == 'WAITING_FOR_REIMBURSEMENT':
-                if text in ['Y', 'YES']:
-                    expense['reimbursement_status'] = 'Pending'
-                    user_session['state'] = 'WAITING_FOR_PROJECT'
-                    send_whatsapp_message(sender_id, "🏢 Which project/company?\n(or reply 'skip')")
-                elif text in ['N', 'NO']:
-                    expense['reimbursement_status'] = 'Not Needed'
-                    expense['company_project'] = 'Company Paid'
-                    user_session['state'] = 'WAITING_FOR_NOTES'
-                    send_whatsapp_message(sender_id, "📝 Add notes (or reply 'skip'):")
-                else:
-                    send_whatsapp_message(sender_id, "⚠️ Please reply Y (Yes) or N (No)")
-                    
-            elif state == 'WAITING_FOR_PROJECT':
+            if state == 'WAITING_FOR_PROJECT':
                 expense['company_project'] = text if text != 'SKIP' else 'Not Specified'
-                user_session['state'] = 'WAITING_FOR_NOTES'
-                send_whatsapp_message(sender_id, "📝 Add notes (or reply 'skip'):")
+                user_session['state'] = 'WAITING_FOR_NOTES_CHOICE'
+                send_whatsapp_interactive_buttons(sender_id, "📝 Would you like to add notes?", [('note_add', 'Add Note'), ('note_skip', 'Skip')])
                 
-            elif state == 'WAITING_FOR_NOTES':
-                expense['notes'] = text if text not in ['DONE', 'SKIP'] else None
+            elif state == 'WAITING_FOR_NOTES_TEXT':
+                expense['notes'] = text
                 user_session['state'] = 'WAITING_FOR_BANK'
                 
                 # Ask for Bank using Interactive Buttons
