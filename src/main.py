@@ -176,6 +176,10 @@ def wa_process_next_receipt(sender_id):
     date = expense_data.get('date', 'Unknown')
     items = expense_data.get('items', [])
     
+    items_text = ""
+    if items and isinstance(items, list):
+        items_text = "\n🛒 Items:\n" + "\n".join([f"• {str(item).title()}" for item in items])
+
     text = f"✅ Receipt Extracted!\n\n🏪 Merchant: {merchant.upper()}\n💰 Amount: {currency} {amount}\n📅 Date: {date}{items_text}\n\nIs this Personal or Business?"
     buttons = [
         ('cat_personal', 'Personal'),
