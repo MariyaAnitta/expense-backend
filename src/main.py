@@ -298,20 +298,13 @@ def handle_whatsapp_webhook():
             
             file_path = download_whatsapp_media(media_id, extension=extension)
             if file_path:
-                # UPLOAD TO FIREBASE STORAGE
-                db = FirebaseClient()
-                original_name = message[msg_type].get("filename", f"wa_{media_id}")
-                print(f"📤 Uploading WA {msg_type} to Firebase Storage...")
-                source_url = db.upload_file(file_path, str(sender_id), original_filename=original_name)
-
                 # AI EXTRACTION
                 extractor = ReceiptExtractor()
                 expense_data = extractor.extract_expense_from_receipt(file_path)
                 
                 if "error" not in expense_data:
-                    # Inject URL and path
-                    expense_data['source_url'] = source_url
-                    expense_data['file_path'] = file_path
+                    # Inject configuration
+                    expense_data['source'] = 'whatsapp'
                     
                     wa_pending_queues[sender_id].append(expense_data)
                     
@@ -514,14 +507,8 @@ class ExpenseMonitor:
                         extracted_data['source'] = 'forwarded_email' # Marker for indexing
                         extracted_data['user_id'] = "SHARED_POOL"
                         
-                        # UPLOAD ATTACHMENTS TO FIREBASE STORAGE (if any)
-                        if email.get('attachments'):
-                            # Take the first attachment as the primary source URL if multiple exist
-                            primary_file = email['attachments'][0]['path']
-                            original_name = email['attachments'][0]['filename']
-                            print(f"📤 Uploading email attachment to Storage: {original_name}")
-                            source_url = self.firebase.upload_file(primary_file, "receipts_inbox", original_filename=original_name)
-                            extracted_data['source_url'] = source_url
+                        # AI extraction already handles local paths for analysis.
+                        # We just save the data now without uploading to storage as requested.
                         
                         # Save to Firebase
                         self.firebase.save_telegram_receipt(extracted_data)

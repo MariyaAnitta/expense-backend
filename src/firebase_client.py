@@ -1,6 +1,6 @@
 import os
 import firebase_admin
-from firebase_admin import credentials, firestore, storage
+from firebase_admin import credentials, firestore
 from datetime import datetime
 from dotenv import load_dotenv
 import os
@@ -31,44 +31,11 @@ class FirebaseClient:
                 cred_json = json.loads(cred_json_str)
                 cred = credentials.Certificate(cred_json)
             
-            firebase_admin.initialize_app(cred, {
-                'storageBucket': bucket_name
-            })
+            firebase_admin.initialize_app(cred)
         
         self.db = firestore.client()
-        self.bucket = storage.bucket()
-        print(f"✅ Connected to Firebase Firestore and Storage (Bucket: {self.bucket.name})")
+        print("✅ Connected to Firebase Firestore")
 
-    def upload_file(self, local_path, user_id, original_filename=None):
-        """
-        Upload file to Firebase Storage and return public download URL
-        """
-        try:
-            if not os.path.exists(local_path):
-                print(f"❌ File not found: {local_path}")
-                return None
-            
-            # Generate a unique filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            ext = os.path.splitext(local_path)[1] or ".jpg"
-            filename = f"{original_filename or uuid.uuid4().hex}_{timestamp}{ext}"
-            
-            # Path: verified_receipts/{user_id}/{filename}
-            blob_path = f"verified_receipts/{user_id}/{filename}"
-            blob = self.bucket.blob(blob_path)
-            
-            # Upload
-            blob.upload_from_filename(local_path)
-            
-            # Make public to get a long-lived download URL (as requested by user for frontend)
-            blob.make_public()
-            
-            print(f"✅ File uploaded to Storage: {blob.public_url}")
-            return blob.public_url
-            
-        except Exception as e:
-            print(f"❌ Error uploading file to Firebase Storage: {e}")
-            return None
     
     def transaction_exists(self, gmail_message_id):
         """
@@ -203,8 +170,6 @@ class FirebaseClient:
                 'payment_method': expense_data.get('payment_method'),
                 'tax_amount': expense_data.get('tax_amount'),
                 'telegram_user_id': telegram_user_id,
-                'file_path': expense_data.get('file_path'),
-                'source_url': expense_data.get('source_url'), # Firebase Storage URL
                 'confidence': 0.90,
                 
                 # Metadata fields

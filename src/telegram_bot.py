@@ -104,10 +104,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
 
-        # UPLOAD TO FIREBASE STORAGE
-        logger.info("📤 Uploading photo to Firebase Storage...")
-        source_url = firebase_client.upload_file(file_path, str(user_id), original_filename=f"telegram_{photo.file_id}")
-
         # AI EXTRACTION
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
 
@@ -117,9 +113,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
 
-        # Inject the URL
-        expense_data['source_url'] = source_url
-        expense_data['file_path'] = file_path 
+        # Add local path and source for database
+        expense_data['source'] = 'telegram'
 
         context.user_data['pending_queue'].append(expense_data)
 
@@ -157,10 +152,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
 
-        # UPLOAD TO FIREBASE STORAGE
-        logger.info(f"📤 Uploading PDF to Firebase Storage: {doc.file_name}")
-        source_url = firebase_client.upload_file(file_path, str(user_id), original_filename=doc.file_name)
-
         # AI EXTRACTION
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
 
@@ -170,9 +161,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
 
-        # Inject the URL
-        expense_data['source_url'] = source_url
-        expense_data['file_path'] = file_path
+        # Add source for database
+        expense_data['source'] = 'telegram'
 
         context.user_data['pending_queue'].append(expense_data)
 
