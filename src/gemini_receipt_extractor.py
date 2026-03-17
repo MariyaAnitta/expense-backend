@@ -87,18 +87,22 @@ You are an expert at financial and travel data extraction. Analyze the provided 
 1. THE FINANCIAL LEDGER (Expenses)
 Extract the following fields in JSON format:
 {
-    "merchant_name": "store/airline/hotel/description",
-    "total_amount": numeric value only,
-    "currency": "3-letter code (AED, USD, INR, etc.)",
+    "merchant": "Name of Store",
+    "amount": 0.00,
+    "currency": "AED/USD/INR/etc",
     "date": "YYYY-MM-DD",
-    "cat": "Transport/Meals/Lodging/Office/Utilities/Salary/Transfer/General",
-    "items": ["list of items bought"],
-    "tax_amount": numeric tax value or null,
+    "category": "Meals/Transport/Lodging/Utilities/General",
+    "items": ["list of items"],
+    "card_digits": "Last 4 digits only (e.g., 4477) if visible, otherwise null",
+    "bank": "Bank name if mentioned, otherwise null",
     "main_category": "Business or Personal",
-    "payment_method": "Card/Cash/UPI/etc",
-    "card_details": "last 4 digits or card network (e.g., VISA 1234) if visible, otherwise null",
-    "bank": "Bank name if mentioned on receipt, otherwise null"
+    "payment_method": "Card/Cash/etc",
+    "tax_amount": 0.00
 }
+
+Instructions for Auto-Pilot:
+- card_digits: Scan the receipt for any payment card information (e.g., "Visa ****4477", "MasterCard ending in 1234"). Extract specifically the Last 4 Digits only.
+- If you find the last 4 digits, populate the card_digits field. You may leave the bank field empty if digits are present.
 
 2. THE MOBILITY LEDGER (Travel Logs)
 ONLY if the document is a flight ticket, hotel booking, or visa, ALSO extract:
@@ -210,7 +214,7 @@ CRITICAL RULES:
                 json_text = json_match.group(0)
                 try:
                     data = json.loads(json_text)
-                    logger.info(f"✅ Extracted: {data.get('merchant_name')} - {data.get('currency')} {data.get('total_amount')}")
+                    logger.info(f"✅ Extracted: {data.get('merchant')} - {data.get('currency')} {data.get('amount')}")
                     return data
                 except json.JSONDecodeError as e:
                     logger.error(f"❌ Failed to parse AI response as JSON: {e}")

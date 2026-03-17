@@ -70,6 +70,7 @@ class FirebaseClient:
                 'description': f"{transaction_data.get('transaction_type', 'transaction')} - {transaction_data.get('merchant')}",
                 'confidence': 0.95,
                 'gmail_message_id': gmail_message_id,
+                'card_digits': transaction_data.get('card_last_4'),
                 'card_details': transaction_data.get('card_last_4') or transaction_data.get('card_details'),
                 'transaction_type': transaction_data.get('transaction_type'),
                 'bank': transaction_data.get('bank'),
@@ -147,19 +148,20 @@ class FirebaseClient:
                 print(f"⚠️ Receipt already exists (Message ID: {gmail_message_id[:20]}...)")
                 return {'success': False, 'error': 'duplicate'}
 
-            # Standardize category name as 'cat' for consistency with Financial Ledger
+            # Standardize category name
             cat = expense_data.get('category', 'General')
-            if cat == 'Food': cat = 'Meals' # Map to required categories
+            if cat == 'Food': cat = 'Meals'
             
             receipt_data = {
-                'merchant': expense_data.get('merchant_name', 'Unknown').upper(),
-                'amount': float(expense_data.get('total_amount', 0)),
+                'merchant': str(expense_data.get('merchant', 'Unknown')).upper(),
+                'amount': float(expense_data.get('amount', 0)),
                 'bank': expense_data.get('bank', 'Other'),
-                'card_details': expense_data.get('card_details'), # Captured from documents
+                'card_digits': expense_data.get('card_digits'), # Auto-Pilot field
+                'card_details': expense_data.get('card_digits') or expense_data.get('card_details'), # Compatibility
                 'currency': expense_data.get('currency', 'INR'),
                 'date': expense_data.get('date'),
                 'cat': cat,
-                'source': expense_data.get('source', 'telegram'), # Use source from expense_data if available
+                'source': expense_data.get('source', 'telegram'),
                 'items': expense_data.get('items', []),
                 'payment_method': expense_data.get('payment_method'),
                 'tax_amount': expense_data.get('tax_amount'),
@@ -168,13 +170,13 @@ class FirebaseClient:
                 'confidence': 0.90,
                 
                 # Metadata fields
-                'main_category': expense_data.get('main_category'),  # Personal or Business
+                'main_category': expense_data.get('main_category'),
                 'company_project': expense_data.get('company_project'),
                 'reimbursement_status': expense_data.get('reimbursement_status'),
                 'paid_by': expense_data.get('paid_by'),
                 'notes': expense_data.get('notes'),
-                'user_id': 'SHARED_POOL', # Shared pool for finance team
-                'gmail_message_id': expense_data.get('gmail_message_id'), # CRITICAL for duplicate detection
+                'user_id': 'SHARED_POOL',
+                'gmail_message_id': expense_data.get('gmail_message_id'),
                 
                 'created_at': firestore.SERVER_TIMESTAMP
             }

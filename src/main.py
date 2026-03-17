@@ -170,8 +170,8 @@ def wa_process_next_receipt(sender_id):
     expense_data = wa_pending_queues[sender_id][0]
     wa_user_data[sender_id] = {'expense': expense_data, 'state': 'WAITING_FOR_CATEGORY'}
 
-    merchant = expense_data.get('merchant_name', 'Unknown')
-    amount = expense_data.get('total_amount', 0)
+    merchant = expense_data.get('merchant', 'Unknown')
+    amount = expense_data.get('amount', 0)
     currency = expense_data.get('currency', 'INR')
     date = expense_data.get('date', 'Unknown')
     items = expense_data.get('items', [])
@@ -258,8 +258,8 @@ def handle_whatsapp_webhook():
                     expense['user_id'] = 'SHARED_POOL'
                     
                     # Check duplicates right before saving
-                    merchant = expense.get('merchant_name', 'Unknown')
-                    amount = expense.get('total_amount', 0)
+                    merchant = expense.get('merchant', 'Unknown')
+                    amount = expense.get('amount', 0)
                     date = expense.get('date')
                     telegram_id = f"wa_{sender_id}" # Maps to telegram_user_id in DB
                     

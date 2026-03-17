@@ -91,8 +91,8 @@ async def process_next_receipt(update: Update, context: ContextTypes.DEFAULT_TYP
     expense_data = pending_receipt_queues[user_id][0]
     user_expense_data[user_id] = expense_data
 
-    merchant = expense_data.get('merchant_name', 'Unknown')
-    amount = expense_data.get('total_amount', 0)
+    merchant = expense_data.get('merchant', 'Unknown')
+    amount = expense_data.get('amount', 0)
     currency = expense_data.get('currency', 'INR')
     date = expense_data.get('date', 'Unknown')
     items = expense_data.get('items', [])
@@ -241,8 +241,8 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     expense_data['bank'] = bank_name # Add to payload
     
     # FINAL SAVE TO FIREBASE
-    merchant = expense_data.get('merchant_name', 'Unknown')
-    amount = expense_data.get('total_amount', 0)
+    merchant = expense_data.get('merchant', 'Unknown')
+    amount = expense_data.get('amount', 0)
     currency = expense_data.get('currency', 'INR')
     date = expense_data.get('date', 'Unknown')
     telegram_user_id = str(user_id)
