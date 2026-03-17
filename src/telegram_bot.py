@@ -29,11 +29,13 @@ app = Flask(__name__)
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES, WAITING_FOR_BANK = range(5)
 
-# Global application instance
+# Global application and loop management
 application = None
+bot_loop = None
+bot_thread = None
 
-async def get_application():
-    """Get or initialize the global application instance"""
+async def _build_application():
+    """Internal helper to build and start the application"""
     global application
     if application is None:
         persistence = PicklePersistence(filepath="bot_state.pickle")
@@ -67,8 +69,13 @@ async def get_application():
         
         await application.initialize()
         await application.start()
-        logger.info("✅ Global Telegram Application initialized")
+        logger.info("✅ Global Telegram Application initialized in background loop")
     
+    return application
+
+def get_application():
+    """Get the running application instance (sync helper)"""
+    global application
     return application
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -396,17 +403,18 @@ def webhook():
         json_data = request.get_json(force=True)
 
         async def process():
-            app_bot = await get_application()
-            update = Update.de_json(json_data, app_bot.bot)
-            await app_bot.process_update(update)
-            # PTB usually flushes persistence on shutdown or periodically. 
-            # In serverless, we should flush manually if possible or use a more robust backend.
-            # But get_application keeps it alive.
+            app_bot = get_application()
+            if app_bot:
+                update = Update.de_json(json_data, app_bot.bot)
+                await app_bot.process_update(update)
+            else:
+                logger.error("❌ Application not initialized yet")
 
-        # Run in a separate thread so we can return 200 immediately
-        # This prevents Telegram from retrying while AI is working
-        from threading import Thread
-        Thread(target=lambda: asyncio.run(process())).start()
+        # Process update in the dedicated background loop
+        if bot_loop and bot_loop.is_running():
+            asyncio.run_coroutine_threadsafe(process(), bot_loop)
+        else:
+            logger.error("❌ Background loop NOT running")
 
         return jsonify({"ok": True}), 200
 
@@ -414,33 +422,37 @@ def webhook():
         logger.error(f"❌ Webhook error: {e}")
         return jsonify({"ok": False}), 500
 
+def start_bot_worker():
+    """Start the background worker thread with its own loop"""
+    global bot_loop
+    bot_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bot_loop)
+    
+    # Initialize application inside this loop
+    bot_loop.run_until_complete(_build_application())
+    
+    # Set webhook
+    try:
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        bot_loop.run_until_complete(bot.set_webhook(
+            url=f"{WEBHOOK_URL}/webhook",
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        ))
+        logger.info(f"✅ Webhook set to: {WEBHOOK_URL}/webhook")
+    except Exception as e:
+        logger.error(f"❌ Failed to set webhook: {e}")
+
+    # Run loop forever
+    logger.info("🤖 Bot worker thread started")
+    bot_loop.run_forever()
+
 def init_bot():
-    """Set webhook on startup - with retry"""
-    max_retries = 3
-
-    for attempt in range(max_retries):
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            try:
-                bot = Bot(token=TELEGRAM_BOT_TOKEN)
-                loop.run_until_complete(bot.set_webhook(
-                    f"{WEBHOOK_URL}/webhook",
-                    read_timeout=30,
-                    write_timeout=30,
-                    connect_timeout=30
-                ))
-                logger.info("✅ Webhook set successfully")
-                return
-            finally:
-                loop.close()
-
-        except Exception as e:
-            logger.warning(f"⚠️ Webhook setup attempt {attempt + 1} failed: {e}")
-            if attempt == max_retries - 1:
-                logger.error("❌ Failed to set webhook after retries. Bot will still work when requests come in.")
-                # Don't crash - webhook can be set later by first request
+    """Initialize bot in a background thread"""
+    from threading import Thread
+    global bot_thread
+    bot_thread = Thread(target=start_bot_worker, daemon=True)
+    bot_thread.start()
 
 def start_flask_server():
     """Start Flask server for webhook"""
