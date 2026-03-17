@@ -29,9 +29,47 @@ app = Flask(__name__)
 # Conversation states
 WAITING_FOR_CATEGORY, WAITING_FOR_REIMBURSEMENT, WAITING_FOR_PROJECT, WAITING_FOR_NOTES, WAITING_FOR_BANK = range(5)
 
-# Store pending receipt queues per user
-pending_receipt_queues = {}
-user_expense_data = {}
+# Global application instance
+application = None
+
+async def get_application():
+    """Get or initialize the global application instance"""
+    global application
+    if application is None:
+        persistence = PicklePersistence(filepath="bot_state.pickle")
+        application = (
+            Application.builder()
+            .token(TELEGRAM_BOT_TOKEN)
+            .persistence(persistence)
+            .build()
+        )
+        
+        # Add handlers
+        conv_handler = ConversationHandler(
+            entry_points=[
+                MessageHandler(filters.PHOTO, handle_photo),
+                MessageHandler(filters.Document.ALL, handle_document)
+            ],
+            states={
+                WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
+                WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
+                WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
+                WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
+                WAITING_FOR_BANK: [CallbackQueryHandler(handle_bank)]
+            },
+            fallbacks=[],
+            name="receipt_conversation",
+            persistent=True
+        )
+        
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(conv_handler)
+        
+        await application.initialize()
+        await application.start()
+        logger.info("✅ Global Telegram Application initialized")
+    
+    return application
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Welcome message when user starts the bot"""
@@ -56,8 +94,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         logger.info(f"📸 Received photo from user {user_id}")
 
-        if user_id not in pending_receipt_queues:
-            pending_receipt_queues[user_id] = []
+        # Use context.user_data for persistence
+        if 'pending_queue' not in context.user_data:
+            context.user_data['pending_queue'] = []
 
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
@@ -66,7 +105,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(file_path)
 
         # UPLOAD TO FIREBASE STORAGE
-        print("📤 Uploading photo to Firebase Storage...")
+        logger.info("📤 Uploading photo to Firebase Storage...")
         source_url = firebase_client.upload_file(file_path, str(user_id), original_filename=f"telegram_{photo.file_id}")
 
         # AI EXTRACTION
@@ -80,11 +119,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Inject the URL
         expense_data['source_url'] = source_url
-        expense_data['file_path'] = file_path # Local path for any further local use
+        expense_data['file_path'] = file_path 
 
-        pending_receipt_queues[user_id].append(expense_data)
+        context.user_data['pending_queue'].append(expense_data)
 
-        if len(pending_receipt_queues[user_id]) == 1:
+        if len(context.user_data['pending_queue']) == 1:
             await update.message.reply_text("⏳ Processing your receipt...")
             return await process_next_receipt(update, context, user_id)
         else:
@@ -109,8 +148,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         logger.info(f"📄 Received PDF from user {user_id}: {doc.file_name}")
 
-        if user_id not in pending_receipt_queues:
-            pending_receipt_queues[user_id] = []
+        # Use context.user_data for persistence
+        if 'pending_queue' not in context.user_data:
+            context.user_data['pending_queue'] = []
 
         file = await context.bot.get_file(doc.file_id)
         file_path = f"temp/receipt_{doc.file_id}.pdf"
@@ -118,7 +158,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(file_path)
 
         # UPLOAD TO FIREBASE STORAGE
-        print(f"📤 Uploading PDF to Firebase Storage: {doc.file_name}")
+        logger.info(f"📤 Uploading PDF to Firebase Storage: {doc.file_name}")
         source_url = firebase_client.upload_file(file_path, str(user_id), original_filename=doc.file_name)
 
         # AI EXTRACTION
@@ -134,9 +174,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expense_data['source_url'] = source_url
         expense_data['file_path'] = file_path
 
-        pending_receipt_queues[user_id].append(expense_data)
+        context.user_data['pending_queue'].append(expense_data)
 
-        if len(pending_receipt_queues[user_id]) == 1:
+        if len(context.user_data['pending_queue']) == 1:
             await update.message.reply_text("⏳ Processing your document...")
             return await process_next_receipt(update, context, user_id)
         else:
@@ -150,8 +190,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_next_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     """Process next receipt in queue"""
-    expense_data = pending_receipt_queues[user_id][0]
-    user_expense_data[user_id] = expense_data
+    if 'pending_queue' not in context.user_data or not context.user_data['pending_queue']:
+        return ConversationHandler.END
+        
+    expense_data = context.user_data['pending_queue'][0]
+    context.user_data['active_receipt'] = expense_data # Keep tracking active one
 
     merchant = expense_data.get('merchant', 'Unknown')
     amount = expense_data.get('amount', 0)
@@ -179,11 +222,11 @@ async def handle_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text.strip().upper()
 
-    if user_id not in user_expense_data:
+    if 'active_receipt' not in context.user_data:
         await update.message.reply_text("⚠️ No pending receipt. Send a new photo.")
         return ConversationHandler.END
 
-    expense_data = user_expense_data[user_id]
+    expense_data = context.user_data['active_receipt']
 
     if user_message in ['P', 'PERSONAL']:
         expense_data['main_category'] = 'Personal'
@@ -212,11 +255,11 @@ async def handle_reimbursement(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     user_message = update.message.text.strip().upper()
 
-    if user_id not in user_expense_data:
+    if 'active_receipt' not in context.user_data:
         await update.message.reply_text("⚠️ No pending receipt. Send a new photo.")
         return ConversationHandler.END
 
-    expense_data = user_expense_data[user_id]
+    expense_data = context.user_data['active_receipt']
 
     if user_message in ['Y', 'YES']:
         expense_data['reimbursement_status'] = 'Pending'
@@ -238,11 +281,11 @@ async def handle_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
 
-    if user_id not in user_expense_data:
+    if 'active_receipt' not in context.user_data:
         await update.message.reply_text("⚠️ No pending receipt. Send a new photo.")
         return ConversationHandler.END
 
-    expense_data = user_expense_data[user_id]
+    expense_data = context.user_data['active_receipt']
 
     if user_message.lower() != 'skip':
         expense_data['company_project'] = user_message
@@ -257,11 +300,11 @@ async def handle_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_message = update.message.text.strip()
     
-    if user_id not in user_expense_data:
+    if 'active_receipt' not in context.user_data:
         await update.message.reply_text("⚠️ No pending receipt. Send a new photo.")
         return ConversationHandler.END
     
-    expense_data = user_expense_data[user_id]
+    expense_data = context.user_data['active_receipt']
     
     # Save notes
     if user_message.lower() not in ['done', 'skip']:
@@ -295,11 +338,11 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     bank_name = query.data.split('_')[1] # Extracts 'Amex', 'Citi', etc.
     
-    if user_id not in user_expense_data:
+    if 'active_receipt' not in context.user_data:
         await query.edit_message_text("⚠️ No pending receipt data found.")
         return ConversationHandler.END
     
-    expense_data = user_expense_data[user_id]
+    expense_data = context.user_data['active_receipt']
     expense_data['bank'] = bank_name # Add to payload
     
     # FINAL SAVE TO FIREBASE
@@ -335,10 +378,11 @@ async def handle_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error saving receipt to ledger.")
     
     # Clean up
-    pending_receipt_queues[user_id].pop(0)
-    del user_expense_data[user_id]
+    context.user_data['pending_queue'].pop(0)
+    if 'active_receipt' in context.user_data:
+        del context.user_data['active_receipt']
     
-    if user_id in pending_receipt_queues and pending_receipt_queues[user_id]:
+    if context.user_data.get('pending_queue'):
         # Process next if exists
         return await process_next_receipt(query, context, user_id)
     else:
@@ -352,39 +396,7 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "bot": "ExpenseFlow"}), 200
 
-def build_application():
-    """Build application with handlers"""
-    # ✅ Add this line to create the persistence object
-    persistence = PicklePersistence(filepath="bot_state.pickle")
-    
-    app_instance = (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .persistence(persistence)  # ✅ Link persistence here
-        .build()
-    )
-    
-    app_instance.add_handler(CommandHandler("start", start_command))
-    
-    conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.PHOTO, handle_photo),
-            MessageHandler(filters.Document.ALL, handle_document)
-        ],
-        states={
-            WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
-            WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],
-            WAITING_FOR_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_project)],
-            WAITING_FOR_NOTES: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_notes)],
-            WAITING_FOR_BANK: [CallbackQueryHandler(handle_bank)]
-        },
-        fallbacks=[],
-        name="receipt_conversation",  # ✅ Ensure this name is set
-        persistent=True               # ✅ Set this to True
-    )
-    
-    app_instance.add_handler(conv_handler)
-    return app_instance
+# Removed build_application in favor of get_application global
 
 
 @app.route('/webhook', methods=['POST'])
@@ -393,24 +405,23 @@ def webhook():
     try:
         json_data = request.get_json(force=True)
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        async def process():
+            app_bot = await get_application()
+            update = Update.de_json(json_data, app_bot.bot)
+            await app_bot.process_update(update)
+            # PTB usually flushes persistence on shutdown or periodically. 
+            # In serverless, we should flush manually if possible or use a more robust backend.
+            # But get_application keeps it alive.
 
-        try:
-            application = build_application()
-            loop.run_until_complete(application.initialize())
-
-            update = Update.de_json(json_data, application.bot)
-            loop.run_until_complete(application.process_update(update))
-
-            loop.run_until_complete(application.shutdown())
-        finally:
-            loop.close()
+        # Run in a separate thread so we can return 200 immediately
+        # This prevents Telegram from retrying while AI is working
+        from threading import Thread
+        Thread(target=lambda: asyncio.run(process())).start()
 
         return jsonify({"ok": True}), 200
 
     except Exception as e:
-        logger.error(f"❌ Webhook error: {e}", exc_info=True)
+        logger.error(f"❌ Webhook error: {e}")
         return jsonify({"ok": False}), 500
 
 def init_bot():
