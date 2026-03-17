@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from logger import setup_logger
 from threading import Thread
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 
 load_dotenv()
 logger = logging.getLogger('ExpenseMonitor')
@@ -157,9 +157,14 @@ def verify_whatsapp_webhook():
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
+    
+    logger.info(f"🔍 Received verification request: mode={mode}, token={token}")
+    
     if mode == "subscribe" and token == WA_VERIFY_TOKEN:
-        logger.info("✅ WhatsApp Webhook Verified")
-        return challenge, 200
+        logger.info("✅ WhatsApp Webhook Verified successfully")
+        return make_response(challenge, 200)
+    
+    logger.error(f"❌ WhatsApp Verification FAILED: expected {WA_VERIFY_TOKEN}, got {token}")
     return "Verification failed", 403
 
 def wa_process_next_receipt(sender_id):
