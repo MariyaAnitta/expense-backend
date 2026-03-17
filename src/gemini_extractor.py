@@ -72,17 +72,17 @@ EMAIL BODY:
 {email_body}
 
 Extract and return ONLY a valid JSON object (no markdown, no explanation) with these exact fields:
-{{
+{
   "merchant": "merchant name or transaction description",
-  "amount": numeric value only (no currency symbol),
-  "currency": "currency code (INR, USD, etc.)",
-  "date": "YYYY-MM-DD format",
+  "amount": 0.00,
+  "currency": "AED/USD/INR/etc",
+  "date": "YYYY-MM-DD",
   "time": "HH:MM:SS format if available, otherwise null",
-  "card_last_4": "last 4 digits of card/account",
-  "transaction_type": "credit or debit",
+  "card_digits": "Last 4 digits only (e.g., 4477) if visible, otherwise null",
   "bank": "bank name",
+  "transaction_type": "credit or debit",
   "account_holder": "account holder name if mentioned"
-}}
+}
 
 Rules:
 - If a field is not found in the email, use null
