@@ -64,6 +64,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
 
+        # UPLOAD TO FIREBASE STORAGE
+        print("📤 Uploading photo to Firebase Storage...")
+        source_url = firebase_client.upload_file(file_path, str(user_id), original_filename=f"telegram_{photo.file_id}")
+
+        # AI EXTRACTION
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
 
         if expense_data.get('error'):
@@ -71,6 +76,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ Could not process receipt:\n{expense_data['error']}\n\nPlease try again with a clearer image."
             )
             return ConversationHandler.END
+
+        # Inject the URL
+        expense_data['source_url'] = source_url
+        expense_data['file_path'] = file_path # Local path for any further local use
 
         pending_receipt_queues[user_id].append(expense_data)
 
@@ -84,6 +93,58 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ Error handling photo: {e}")
         await update.message.reply_text("❌ Error processing receipt.")
+        return ConversationHandler.END
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle receipt documents (PDFs) sent by users"""
+    try:
+        user_id = update.effective_user.id
+        doc = update.message.document
+        
+        # Filter for PDFs
+        if not doc.mime_type or 'pdf' not in doc.mime_type.lower():
+            await update.message.reply_text("⚠️ Please send photos or PDF documents only.")
+            return ConversationHandler.END
+
+        logger.info(f"📄 Received PDF from user {user_id}: {doc.file_name}")
+
+        if user_id not in pending_receipt_queues:
+            pending_receipt_queues[user_id] = []
+
+        file = await context.bot.get_file(doc.file_id)
+        file_path = f"temp/receipt_{doc.file_id}.pdf"
+        os.makedirs("temp", exist_ok=True)
+        await file.download_to_drive(file_path)
+
+        # UPLOAD TO FIREBASE STORAGE
+        print(f"📤 Uploading PDF to Firebase Storage: {doc.file_name}")
+        source_url = firebase_client.upload_file(file_path, str(user_id), original_filename=doc.file_name)
+
+        # AI EXTRACTION
+        expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
+
+        if expense_data.get('error'):
+            await update.message.reply_text(
+                f"⚠️ Could not process document:\n{expense_data['error']}\n\nPlease try again."
+            )
+            return ConversationHandler.END
+
+        # Inject the URL
+        expense_data['source_url'] = source_url
+        expense_data['file_path'] = file_path
+
+        pending_receipt_queues[user_id].append(expense_data)
+
+        if len(pending_receipt_queues[user_id]) == 1:
+            await update.message.reply_text("⏳ Processing your document...")
+            return await process_next_receipt(update, context, user_id)
+        else:
+            await update.message.reply_text("📄 Received another document! Will process next.")
+            return WAITING_FOR_CATEGORY
+
+    except Exception as e:
+        logger.error(f"❌ Error handling document: {e}")
+        await update.message.reply_text("❌ Error processing document.")
         return ConversationHandler.END
 
 async def process_next_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
@@ -305,7 +366,10 @@ def build_application():
     app_instance.add_handler(CommandHandler("start", start_command))
     
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.PHOTO, handle_photo)],
+        entry_points=[
+            MessageHandler(filters.PHOTO, handle_photo),
+            MessageHandler(filters.Document.ALL, handle_document)
+        ],
         states={
             WAITING_FOR_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)],
             WAITING_FOR_REIMBURSEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reimbursement)],

@@ -132,17 +132,17 @@ def send_whatsapp_interactive_buttons(to, body_text, buttons):
     except Exception as e:
         logger.error(f"WhatsApp interactive send error: {e}")
 
-def download_whatsapp_media(media_id):
-    """Download media from WhatsApp"""
+def download_whatsapp_media(media_id, extension="jpg"):
+    """Download media from WhatsApp using media ID"""
+    url = f"https://graph.facebook.com/{WA_VERSION}/{media_id}"
+    headers = {"Authorization": f"Bearer {WA_ACCESS_TOKEN}"}
     try:
-        url = f"https://graph.facebook.com/{WA_VERSION}/{media_id}"
-        headers = {"Authorization": f"Bearer {WA_ACCESS_TOKEN}"}
         res = requests.get(url, headers=headers).json()
         media_url = res.get("url")
         if not media_url: return None
             
         res = requests.get(media_url, headers=headers)
-        file_path = f"temp/whatsapp_{media_id}.jpg"
+        file_path = f"temp/whatsapp_{media_id}.{extension}"
         os.makedirs("temp", exist_ok=True)
         with open(file_path, "wb") as f:
             f.write(res.content)
@@ -286,29 +286,41 @@ def handle_whatsapp_webhook():
                         send_whatsapp_message(sender_id, "🎉 All receipts processed!")
             return jsonify({"status": "ok"}), 200
 
-        # --- Handle Image Receipts ---
-        if msg_type == "image":
-            image_id = message["image"]["id"]
+        # --- Handle Image or Document Receipts ---
+        if msg_type in ["image", "document"]:
+            media_id = message[msg_type]["id"]
+            extension = "pdf" if msg_type == "document" else "jpg"
             
             if sender_id not in wa_pending_queues:
                 wa_pending_queues[sender_id] = []
                 
-            send_whatsapp_message(sender_id, "⏳ Processing your receipt...")
+            send_whatsapp_message(sender_id, f"⏳ Processing your {msg_type}...")
             
-            file_path = download_whatsapp_media(image_id)
+            file_path = download_whatsapp_media(media_id, extension=extension)
             if file_path:
+                # UPLOAD TO FIREBASE STORAGE
+                db = FirebaseClient()
+                original_name = message[msg_type].get("filename", f"wa_{media_id}")
+                print(f"📤 Uploading WA {msg_type} to Firebase Storage...")
+                source_url = db.upload_file(file_path, str(sender_id), original_filename=original_name)
+
+                # AI EXTRACTION
                 extractor = ReceiptExtractor()
                 expense_data = extractor.extract_expense_from_receipt(file_path)
                 
                 if "error" not in expense_data:
+                    # Inject URL and path
+                    expense_data['source_url'] = source_url
+                    expense_data['file_path'] = file_path
+                    
                     wa_pending_queues[sender_id].append(expense_data)
                     
                     if len(wa_pending_queues[sender_id]) == 1:
                         wa_process_next_receipt(sender_id)
                     else:
-                        send_whatsapp_message(sender_id, "📸 Received another receipt! Will process next.")
+                        send_whatsapp_message(sender_id, f"✅ Received {msg_type}! Will process next.")
                 else:
-                    send_whatsapp_message(sender_id, f"❌ Sorry, I couldn't read that receipt:\n{expense_data['error']}")
+                    send_whatsapp_message(sender_id, f"❌ Sorry, I couldn't read that {msg_type}:\n{expense_data['error']}")
                     
         # --- Handle Text Conversation ---
         elif msg_type == "text":
@@ -501,6 +513,15 @@ class ExpenseMonitor:
                         extracted_data['email_sender'] = email['sender']
                         extracted_data['source'] = 'forwarded_email' # Marker for indexing
                         extracted_data['user_id'] = "SHARED_POOL"
+                        
+                        # UPLOAD ATTACHMENTS TO FIREBASE STORAGE (if any)
+                        if email.get('attachments'):
+                            # Take the first attachment as the primary source URL if multiple exist
+                            primary_file = email['attachments'][0]['path']
+                            original_name = email['attachments'][0]['filename']
+                            print(f"📤 Uploading email attachment to Storage: {original_name}")
+                            source_url = self.firebase.upload_file(primary_file, "receipts_inbox", original_filename=original_name)
+                            extracted_data['source_url'] = source_url
                         
                         # Save to Firebase
                         self.firebase.save_telegram_receipt(extracted_data)

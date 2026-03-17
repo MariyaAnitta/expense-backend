@@ -1,18 +1,21 @@
 import os
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
 from datetime import datetime
-from dotenv import load_dotenv
+import os
+import json
+import uuid
 
 load_dotenv()
 
 class FirebaseClient:
-    """Handles all Firebase Firestore operations"""
+    """Handles all Firebase Firestore and Storage operations"""
     
     def __init__(self):
         # Initialize Firebase Admin SDK
         if not firebase_admin._apps:
             cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'credentials/firebase-credentials.json')
+            bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET', 'xpenseflow-10x.firebasestorage.app')
             
             # Check if file exists (local development)
             if os.path.exists(cred_path):
@@ -21,17 +24,50 @@ class FirebaseClient:
             else:
                 # On Render, use environment variable with JSON content
                 print("Loading Firebase credentials from environment variable")
-                import json
                 cred_json_str = os.getenv('FIREBASE_CREDENTIALS_JSON')
                 if not cred_json_str:
                     raise Exception("Firebase credentials not found! Need either file or FIREBASE_CREDENTIALS_JSON env var")
                 cred_json = json.loads(cred_json_str)
                 cred = credentials.Certificate(cred_json)
             
-            firebase_admin.initialize_app(cred)
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': bucket_name
+            })
         
         self.db = firestore.client()
-        print("✅ Connected to Firebase Firestore")
+        self.bucket = storage.bucket()
+        print(f"✅ Connected to Firebase Firestore and Storage (Bucket: {self.bucket.name})")
+
+    def upload_file(self, local_path, user_id, original_filename=None):
+        """
+        Upload file to Firebase Storage and return public download URL
+        """
+        try:
+            if not os.path.exists(local_path):
+                print(f"❌ File not found: {local_path}")
+                return None
+            
+            # Generate a unique filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ext = os.path.splitext(local_path)[1] or ".jpg"
+            filename = f"{original_filename or uuid.uuid4().hex}_{timestamp}{ext}"
+            
+            # Path: verified_receipts/{user_id}/{filename}
+            blob_path = f"verified_receipts/{user_id}/{filename}"
+            blob = self.bucket.blob(blob_path)
+            
+            # Upload
+            blob.upload_from_filename(local_path)
+            
+            # Make public to get a long-lived download URL (as requested by user for frontend)
+            blob.make_public()
+            
+            print(f"✅ File uploaded to Storage: {blob.public_url}")
+            return blob.public_url
+            
+        except Exception as e:
+            print(f"❌ Error uploading file to Firebase Storage: {e}")
+            return None
     
     def transaction_exists(self, gmail_message_id):
         """
@@ -167,6 +203,7 @@ class FirebaseClient:
                 'tax_amount': expense_data.get('tax_amount'),
                 'telegram_user_id': telegram_user_id,
                 'file_path': expense_data.get('file_path'),
+                'source_url': expense_data.get('source_url'), # Firebase Storage URL
                 'confidence': 0.90,
                 
                 # Metadata fields
