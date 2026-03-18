@@ -330,8 +330,7 @@ class ReceiptEmailMonitor:
                     html_content = base64.urlsafe_b64decode(
                         part['body']['data']
                     ).decode('utf-8')
-                    # Very basic HTML cleaning
-                    body += re.sub(r'<[^>]+>', ' ', html_content)
+                    body += html_content
                 elif 'parts' in part:
                     # Handle nested multi-part
                     body += self._extract_body(part)
@@ -352,29 +351,23 @@ class ReceiptEmailMonitor:
         if not body:
             return None
             
-        # Common patterns for forwarded messages:
-        # 1. From: Name <email@example.com>
-        # 2. From: email@example.com
-        # 3. ---------- Forwarded message --------- From: ...
-        
-        # More robust regex collection
+        # Robust regex collection for various email clients
         forward_patterns = [
-            # Standard Gmail/Outlook format: From: Name <email@example.com>
-            r"From:\s*[^<>\n]*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>",
-            # Simplified format: From: email@example.com
-            r"From:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
-            # Handle cases where From might be lowercase or have special prefixes
-            r"from:\s*.*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>",
-            # Handle quoted "From" in HTML-converted bodies
-            r"\*From:\*\s*.*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>"
+            r'From:\s*[^<]*<([^>]+)>',  # From: Name <email@domain.com>
+            r'From:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', # From: email@domain.com
+            r'[\*]*From:[\*]*\s*[^<]*<([^>]+)>', # *From:* Name <email@domain.com>
+            r'---------- Forwarded message ---------.*?From:\s*([^<\s]+@[^>\s]+)', # Gmail specific
         ]
         
         for pattern in forward_patterns:
-            match = re.search(pattern, body, re.IGNORECASE)
+            # Use DOTALL for Gmail format which might span lines
+            match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
             if match:
                 email = match.group(1).strip()
                 # Basic validation that it's an email
                 if "@" in email:
+                    # Clean any trailing characters from regex match
+                    email = re.sub(r'[>\*\s].*$', '', email)
                     return email
         
         return None
