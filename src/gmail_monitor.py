@@ -115,7 +115,7 @@ class GmailMonitor:
                     payload['body']['data']
                 ).decode('utf-8')
 
-        body = re.sub(r'<[^>]+>', ' ', body)
+        # Patterns don't need to change, but they will work now because we haven't stripped < > yet
         body = re.sub(r'\s+', ' ', body).strip()
         return body
 
@@ -214,13 +214,19 @@ class ReceiptEmailMonitor:
             sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
             date = next((h['value'] for h in headers if h['name'] == 'Date'), 'Unknown')
 
+            # Get raw body for extraction
             body = self._extract_body(message['payload'])
             
             # Extract attachments
             attachments = self._get_attachments(message_id, message['payload'])
 
             # Extract original sender if it's a forwarded email
+            # IMPORTANT: Extract BEFORE cleaning/stripping tags
             forwarded_from = self._extract_forwarded_from(body)
+
+            # Now clean the body for AI processing
+            cleaned_body = re.sub(r'<[^>]+>', ' ', body)
+            cleaned_body = re.sub(r'\s+', ' ', cleaned_body).strip()
 
             return {
                 'message_id': message_id,
@@ -228,7 +234,7 @@ class ReceiptEmailMonitor:
                 'sender': sender,
                 'forwarded_from': forwarded_from,
                 'date': date,
-                'body': body,
+                'body': cleaned_body,
                 'snippet': message.get('snippet', ''),
                 'attachments': attachments
             }

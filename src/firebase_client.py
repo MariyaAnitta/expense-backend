@@ -85,7 +85,12 @@ class FirebaseClient:
                 'created_at': firestore.SERVER_TIMESTAMP
             }
             
-            self.db.collection('expenses').add(expense_data)
+            # Use gmail_message_id as document ID if available to prevent race condition duplicates
+            if gmail_message_id:
+                doc_ref = self.db.collection('expenses').document(gmail_message_id)
+                doc_ref.set(expense_data, merge=True)
+            else:
+                self.db.collection('expenses').add(expense_data)
             
             print(f"✅ Saved: {expense_data['currency']} {expense_data['amount']} - {expense_data['merchant'][:40]}")
             return True
@@ -188,8 +193,14 @@ class FirebaseClient:
             # Remove null values
             receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
             
-            doc_ref = self.db.collection('expenses').add(receipt_data)
-            expense_id = doc_ref[1].id
+            # Use gmail_message_id as document ID if available to prevent race condition duplicates
+            if gmail_message_id:
+                doc_ref = self.db.collection('expenses').document(gmail_message_id)
+                doc_ref.set(receipt_data, merge=True)
+                expense_id = gmail_message_id
+            else:
+                doc_ref = self.db.collection('expenses').add(receipt_data)
+                expense_id = doc_ref[1].id
             
             print(f"✅ Saved to Financial Ledger: {receipt_data['currency']} {receipt_data['amount']} - {receipt_data['merchant']}")
             
