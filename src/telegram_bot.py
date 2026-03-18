@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Preferred URL from environment or fallback to the new Render URL
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://telegram-bot-5gu6.onrender.com")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://expense-backend-3gx2.onrender.com")
 
 # Initialize receipt extractor and Firebase client
 receipt_extractor = ReceiptExtractor()
