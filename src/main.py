@@ -498,6 +498,11 @@ class ExpenseMonitor:
             if receipt_emails:
                 self.logger.info(f"Processing {len(receipt_emails)} new emails found in inbox...")
                 for email in receipt_emails:
+                    # Skip if already processed
+                    if self.firebase.transaction_exists(email['message_id']):
+                        self.logger.info(f"Skipping already processed receipt: {email['message_id']}")
+                        continue
+                        
                     # Extract using multimodal logic (body + attachments)
                     extracted_data = self.receipt_extractor.extract_data_from_document(
                         body_text=email['body'],

@@ -193,6 +193,8 @@ class FirebaseClient:
             # Remove null values
             receipt_data = {k: v for k, v in receipt_data.items() if v is not None}
             
+            print(f"  [DEBUG] Saving to Firestore: {json.dumps({k:str(v) for k,v in receipt_data.items()})}")
+            
             # Use gmail_message_id as document ID if available to prevent race condition duplicates
             if gmail_message_id:
                 doc_ref = self.db.collection('expenses').document(gmail_message_id)

@@ -241,6 +241,9 @@ class ReceiptEmailMonitor:
             cleaned_body = re.sub(r'<[^>]+>', ' ', body)
             cleaned_body = re.sub(r'\s+', ' ', cleaned_body).strip()
 
+            # Initialize attachments list
+            attachments = self._get_attachments(message_id, message['payload'])
+
             return {
                 'message_id': message_id,
                 'subject': subject,
@@ -273,19 +276,28 @@ class ReceiptEmailMonitor:
                 attachments.extend(self._get_attachments(message_id, part))
         
         # Then check if CURRENT part is a useful attachment
-        if filename:
+        # Then check if CURRENT part is a useful attachment or inline image
+        # Inline images often don't have a filename, but do have contentId
+        content_id = payload.get('body', {}).get('contentId')
+        
+        if filename or content_id:
             # We care about images and PDFs
             is_valid_type = any(t in mime_type.lower() for t in ['image', 'pdf'])
             
             # Special case: octet-stream might be a PDF/Image if filename says so
             if not is_valid_type and 'octet-stream' in mime_type.lower():
-                if any(ext in filename.lower() for ext in ['.pdf', '.jpg', '.jpeg', '.png']):
+                if filename and any(ext in filename.lower() for ext in ['.pdf', '.jpg', '.jpeg', '.png']):
                     is_valid_type = True
-                    logger.info(f"  [DEBUG] Found octet-stream attachment that looks like a valid file: {filename}")
+                    logger.info(f"  [DEBUG] Found octet-stream attachment: {filename}")
 
             if is_valid_type:
                 attachment_id = payload.get('body', {}).get('attachmentId')
                 if attachment_id:
+                    # Generate a filename if missing (for inline images)
+                    if not filename:
+                        ext = mime_type.split('/')[-1] if '/' in mime_type else 'bin'
+                        filename = f"inline_image_{content_id or i}.{ext}" if 'image' in mime_type else f"attachment_{part_id}.pdf"
+                    
                     file_path = self._download_attachment(message_id, attachment_id, filename)
                     if file_path:
                         attachments.append({
@@ -293,8 +305,25 @@ class ReceiptEmailMonitor:
                             'filename': filename,
                             'mime_type': mime_type
                         })
+                elif 'data' in payload.get('body', {}):
+                    # Some small inline images are included directly in the part body
+                    logger.info(f"  [DEBUG] Found image data directly in body part {part_id}")
+                    if not filename:
+                        filename = f"direct_image_{part_id}.png"
+                    
+                    # Store to temp file
+                    os.makedirs('temp', exist_ok=True)
+                    file_path = os.path.join('temp', f"{message_id}_{filename}")
+                    with open(file_path, 'wb') as f:
+                        f.write(base64.urlsafe_b64decode(payload['body']['data']))
+                    
+                    attachments.append({
+                        'path': file_path,
+                        'filename': filename,
+                        'mime_type': mime_type
+                    })
                 else:
-                    logger.warning(f"  ⚠️ Part has filename '{filename}' but no attachmentId in body")
+                    logger.warning(f"  ⚠️ Part {part_id} ({mime_type}) has no attachmentId or direct data")
         
         return attachments
 
