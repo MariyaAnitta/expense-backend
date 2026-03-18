@@ -14,20 +14,18 @@ class FirebaseClient:
     
     def __init__(self):
         # Initialize Firebase Admin SDK
-        if not firebase_admin._apps:
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            # Not initialized yet
             cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH', 'credentials/firebase-credentials.json')
-            bucket_name = os.getenv('FIREBASE_STORAGE_BUCKET', 'xpenseflow-10x.firebasestorage.app')
             
-            # Check if file exists (local development)
             if os.path.exists(cred_path):
-                print(f"Loading Firebase credentials from {cred_path}")
                 cred = credentials.Certificate(cred_path)
             else:
-                # On Render, use environment variable with JSON content
-                print("Loading Firebase credentials from environment variable")
                 cred_json_str = os.getenv('FIREBASE_CREDENTIALS_JSON')
                 if not cred_json_str:
-                    raise Exception("Firebase credentials not found! Need either file or FIREBASE_CREDENTIALS_JSON env var")
+                    raise Exception("Firebase credentials not found!")
                 cred_json = json.loads(cred_json_str)
                 cred = credentials.Certificate(cred_json)
             

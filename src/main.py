@@ -589,14 +589,9 @@ if not os.environ.get("MONITOR_STARTED"):
 # ================================
 if __name__ == "__main__":
     try:
-        flask_thread = Thread(target=run_flask, daemon=True)
-        flask_thread.start()
-
-        time.sleep(2)
-
-        monitor = ExpenseMonitor()
-        monitor.run()
-
+        # Start the Flask server (it will run on the main thread)
+        # The background monitor has already been spawned above
+        run_flask()
     except Exception as e:
         logging.critical(f"Failed to start: {str(e)}", exc_info=True)
         exit(1)
