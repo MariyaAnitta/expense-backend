@@ -219,10 +219,14 @@ class ReceiptEmailMonitor:
             # Extract attachments
             attachments = self._get_attachments(message_id, message['payload'])
 
+            # Extract original sender if it's a forwarded email
+            forwarded_from = self._extract_forwarded_from(body)
+
             return {
                 'message_id': message_id,
                 'subject': subject,
                 'sender': sender,
+                'forwarded_from': forwarded_from,
                 'date': date,
                 'body': body,
                 'snippet': message.get('snippet', ''),
@@ -328,6 +332,33 @@ class ReceiptEmailMonitor:
 
         body = re.sub(r'\s+', ' ', body).strip()
         return body
+
+    def _extract_forwarded_from(self, body):
+        """
+        Extract the original sender's email address from a forwarded message body.
+        Look for patterns like "From: Name <email@example.com>" or "From: email@example.com"
+        """
+        if not body:
+            return None
+            
+        # Common patterns for forwarded messages:
+        # 1. From: Name <email@example.com>
+        # 2. From: email@example.com
+        # 3. ---------- Forwarded message --------- From: ...
+        
+        # Regular expression to find "From:" followed by an email address
+        # We look for the FIRST occurrence of "From:" which usually represents the most recent forward
+        forward_patterns = [
+            r"From:\s*.*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>", # From: Name <email>
+            r"From:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"      # From: email
+        ]
+        
+        for pattern in forward_patterns:
+            match = re.search(pattern, body, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        
+        return None
 
     def fetch_new_receipts(self, after_timestamp=None):
         print("\n" + "=" * 60)

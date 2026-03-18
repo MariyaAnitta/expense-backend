@@ -180,6 +180,7 @@ class FirebaseClient:
                 'notes': expense_data.get('notes'),
                 'user_id': 'SHARED_POOL',
                 'gmail_message_id': expense_data.get('gmail_message_id'),
+                'forwarded_from': expense_data.get('forwarded_from'),
                 
                 'created_at': firestore.SERVER_TIMESTAMP
             }
