@@ -224,10 +224,18 @@ class ReceiptEmailMonitor:
             if forwarded_from:
                 logger.info(f"  ✅ Found Forwarded From: {forwarded_from}")
             else:
-                logger.warning(f"  ⚠️ Could not identify original sender in body (Length: {len(body)})")
-                # Log a snippet for debugging if needed
-                if len(body) > 100:
-                    logger.debug(f"  [DEBUG] Body Snippet: {body[:200]}...")
+                logger.warning(f"  ⚠️ Extraction failed. Body Length: {len(body)}")
+                if len(body) > 0:
+                    snippet = body[:300].replace('\n', ' ')
+                    logger.info(f"  [DEBUG] Body Snippet: {snippet}")
+                
+            # If body is too short, provide a fallback from the snippet
+            if len(body) < 150 and not forwarded_from:
+                api_snippet = message.get('snippet', '')
+                logger.info(f"  [DEBUG] Body too short, trying API snippet: {api_snippet[:100]}")
+                forwarded_from = self._extract_forwarded_from(api_snippet)
+                if forwarded_from:
+                    logger.info(f"  ✅ Found Forwarded From in Snippet: {forwarded_from}")
 
             # Now clean the body for AI processing
             cleaned_body = re.sub(r'<[^>]+>', ' ', body)
@@ -318,27 +326,31 @@ class ReceiptEmailMonitor:
     def _extract_body(self, payload):
         """Recursively extract email body"""
         body = ""
+        parts_found = []
 
         if 'parts' in payload:
             for part in payload['parts']:
-                if part['mimeType'] == 'text/plain' and 'data' in part['body']:
+                mime_type = part.get('mimeType', 'unknown')
+                parts_found.append(mime_type)
+                
+                if mime_type == 'text/plain' and 'data' in part['body']:
                     body += base64.urlsafe_b64decode(
                         part['body']['data']
                     ).decode('utf-8')
-                elif part['mimeType'] == 'text/html' and 'data' in part['body']:
-                    # Use HTML if plain text isn't available or alongside it
-                    html_content = base64.urlsafe_b64decode(
+                elif mime_type == 'text/html' and 'data' in part['body']:
+                    body += base64.urlsafe_b64decode(
                         part['body']['data']
                     ).decode('utf-8')
-                    body += html_content
                 elif 'parts' in part:
-                    # Handle nested multi-part
                     body += self._extract_body(part)
         else:
-            if 'data' in payload['body']:
+            if 'data' in payload.get('body', {}):
                 body = base64.urlsafe_b64decode(
                     payload['body']['data']
                 ).decode('utf-8')
+
+        if not body and parts_found:
+             logger.debug(f"  [DEBUG] No text/html parts found. Parts list: {parts_found}")
 
         body = re.sub(r'\s+', ' ', body).strip()
         return body
