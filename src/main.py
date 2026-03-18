@@ -38,7 +38,7 @@ WA_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 WA_VERSION = os.getenv("WHATSAPP_API_VERSION", "v22.0")
 WA_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "shared_finance_pool_verify_token")
 
-# Create Flask app for health check (required by Render) and Webhooks
+# Flask app initialized here
 app = Flask(__name__)
 
 @app.route('/')
@@ -161,8 +161,8 @@ def verify_whatsapp_webhook():
     logger.info(f"🔍 Received verification request: mode={mode}, token={token}")
     
     if mode == "subscribe" and token == WA_VERIFY_TOKEN:
-        logger.info("✅ WhatsApp Webhook Verified successfully")
-        return make_response(challenge, 200)
+        logger.info(f"✅ WhatsApp Webhook Verified successfully with challenge: {challenge}")
+        return make_response(str(challenge), 200)
     
     logger.error(f"❌ WhatsApp Verification FAILED: expected {WA_VERIFY_TOKEN}, got {token}")
     return "Verification failed", 403
@@ -557,6 +557,25 @@ class ExpenseMonitor:
             self.logger.critical(f"FATAL ERROR: {str(e)}", exc_info=True)
             raise
 
+
+# ================================
+# BACKGROUND MONITOR STARTUP
+# ================================
+def start_monitor_in_background():
+    try:
+        # Use a small delay to let the server start
+        time.sleep(5)
+        logger.info("🧵 Starting Expense Monitor background thread...")
+        monitor = ExpenseMonitor()
+        monitor.run()
+    except Exception as e:
+        logger.error(f"Failed to start monitor thread: {e}")
+
+# This ensures the monitor starts when the app is initialized by Gunicorn
+if not os.environ.get("MONITOR_STARTED"):
+    os.environ["MONITOR_STARTED"] = "true"
+    Thread(target=start_monitor_in_background, daemon=True).start()
+    logger.info("🚀 Expense Monitor background thread spawned")
 
 # ================================
 # ENTRY POINT
