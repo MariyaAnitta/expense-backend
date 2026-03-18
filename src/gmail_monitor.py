@@ -217,12 +217,17 @@ class ReceiptEmailMonitor:
             # Get raw body for extraction
             body = self._extract_body(message['payload'])
             
-            # Extract attachments
-            attachments = self._get_attachments(message_id, message['payload'])
-
             # Extract original sender if it's a forwarded email
             # IMPORTANT: Extract BEFORE cleaning/stripping tags
+            logger.info(f"  [DEBUG] Attempting forwarded_from extraction for {message_id}")
             forwarded_from = self._extract_forwarded_from(body)
+            if forwarded_from:
+                logger.info(f"  ✅ Found Forwarded From: {forwarded_from}")
+            else:
+                logger.warning(f"  ⚠️ Could not identify original sender in body (Length: {len(body)})")
+                # Log a snippet for debugging if needed
+                if len(body) > 100:
+                    logger.debug(f"  [DEBUG] Body Snippet: {body[:200]}...")
 
             # Now clean the body for AI processing
             cleaned_body = re.sub(r'<[^>]+>', ' ', body)
@@ -352,17 +357,25 @@ class ReceiptEmailMonitor:
         # 2. From: email@example.com
         # 3. ---------- Forwarded message --------- From: ...
         
-        # Regular expression to find "From:" followed by an email address
-        # We look for the FIRST occurrence of "From:" which usually represents the most recent forward
+        # More robust regex collection
         forward_patterns = [
-            r"From:\s*.*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>", # From: Name <email>
-            r"From:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"      # From: email
+            # Standard Gmail/Outlook format: From: Name <email@example.com>
+            r"From:\s*[^<>\n]*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>",
+            # Simplified format: From: email@example.com
+            r"From:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+            # Handle cases where From might be lowercase or have special prefixes
+            r"from:\s*.*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>",
+            # Handle quoted "From" in HTML-converted bodies
+            r"\*From:\*\s*.*<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>"
         ]
         
         for pattern in forward_patterns:
             match = re.search(pattern, body, re.IGNORECASE)
             if match:
-                return match.group(1)
+                email = match.group(1).strip()
+                # Basic validation that it's an email
+                if "@" in email:
+                    return email
         
         return None
 

@@ -509,7 +509,8 @@ class ExpenseMonitor:
                         extracted_data['gmail_message_id'] = email['message_id']
                         extracted_data['email_subject'] = email['subject']
                         extracted_data['email_sender'] = email['sender']
-                        extracted_data['forwarded_from'] = email.get('forwarded_from')
+                        # Fallback: if we can't extract original sender from body, use the person who forwarded it
+                        extracted_data['forwarded_from'] = email.get('forwarded_from') or email['sender']
                         extracted_data['source'] = 'forwarded_email' # Marker for indexing
                         extracted_data['user_id'] = "SHARED_POOL"
                         
