@@ -11,11 +11,14 @@ class SupabaseClient:
     """Handles all Supabase database and storage operations"""
     
     def __init__(self):
-        self.supabase_url = os.getenv('SUPABASE_URL')
-        self.supabase_key = os.getenv('SUPABASE_KEY')
+        # Load from env and strip any potential whitespace/quotes
+        self.supabase_url = (os.getenv('SUPABASE_URL') or '').strip().strip('"').strip("'")
+        self.supabase_key = (os.getenv('SUPABASE_KEY') or '').strip().strip('"').strip("'")
         
         if not self.supabase_url or not self.supabase_key:
-            raise Exception("❌ Supabase credentials not found in .env file")
+            print("❌ ERROR: SUPABASE_URL or SUPABASE_KEY is missing!")
+            print("🔗 If running on Render, ensure you've added these to 'Environment Variables' in the dashboard.")
+            raise Exception("Supabase credentials not found. Check your environment variables.")
         
         # REST API endpoint (legacy/database)
         self.api_url = f"{self.supabase_url}/rest/v1/expenses"
