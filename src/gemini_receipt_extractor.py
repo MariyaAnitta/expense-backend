@@ -207,6 +207,9 @@ CRITICAL RULES:
             if not result_text:
                 return {"error": "Failed to get response from AI after retries"}
             
+            # DEBUG: Log raw response
+            logger.info(f"raw AI response: {result_text[:500]}...")
+            
             # Clean markdown and extract JSON using regex
             import re
             json_match = re.search(r'\{.*\}', result_text.strip(), re.DOTALL)
