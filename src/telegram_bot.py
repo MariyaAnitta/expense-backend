@@ -8,7 +8,9 @@ from telegram.ext import CallbackQueryHandler # Add this to your imports
 from dotenv import load_dotenv
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
+from supabase_client import SupabaseClient
 from flask import Flask, request, jsonify
+
 import asyncio
 
 load_dotenv()
@@ -19,9 +21,11 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Preferred URL from environment or fallback to the new Render URL
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://expense-backend-3gx2.onrender.com")
 
-# Initialize receipt extractor and Firebase client
+# Initialize receipt extractor and Firebase/Supabase clients
 receipt_extractor = ReceiptExtractor()
 firebase_client = FirebaseClient()
+supabase_client = SupabaseClient()
+
 
 # Create Flask app for webhook
 app = Flask(__name__)
@@ -111,6 +115,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
 
+        # UPLOAD TO SUPABASE
+        logger.info(f"📤 Uploading photo to Supabase...")
+        document_url = supabase_client.upload_receipt(file_path, "image/jpeg")
+
         # AI EXTRACTION
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
 
@@ -122,6 +130,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Add local path and source for database
         expense_data['source'] = 'telegram'
+        expense_data['document_url'] = document_url
 
         context.user_data['pending_queue'].append(expense_data)
 
@@ -159,6 +168,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs("temp", exist_ok=True)
         await file.download_to_drive(file_path)
 
+        # UPLOAD TO SUPABASE
+        logger.info(f"📤 Uploading document to Supabase...")
+        document_url = supabase_client.upload_receipt(file_path, "application/pdf")
+
         # AI EXTRACTION
         expense_data = receipt_extractor.extract_expense_from_receipt(file_path)
 
@@ -170,6 +183,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Add source for database
         expense_data['source'] = 'telegram'
+        expense_data['document_url'] = document_url
 
         context.user_data['pending_queue'].append(expense_data)
 

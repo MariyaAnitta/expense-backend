@@ -30,6 +30,8 @@ import requests
 from gemini_extractor import TransactionExtractor
 from gemini_receipt_extractor import ReceiptExtractor
 from firebase_client import FirebaseClient
+from supabase_client import SupabaseClient
+
 
 
 # === WHATSAPP CREDENTIALS ===
@@ -303,6 +305,12 @@ def handle_whatsapp_webhook():
             
             file_path = download_whatsapp_media(media_id, extension=extension)
             if file_path:
+                # UPLOAD TO SUPABASE
+                logger.info(f"📤 Uploading WhatsApp {msg_type} to Supabase...")
+                supabase = SupabaseClient()
+                mime_type = "application/pdf" if extension == "pdf" else "image/jpeg"
+                document_url = supabase.upload_receipt(file_path, mime_type)
+
                 # AI EXTRACTION
                 extractor = ReceiptExtractor()
                 expense_data = extractor.extract_expense_from_receipt(file_path)
@@ -310,6 +318,7 @@ def handle_whatsapp_webhook():
                 if "error" not in expense_data:
                     # Inject configuration
                     expense_data['source'] = 'whatsapp'
+                    expense_data['document_url'] = document_url
                     
                     wa_pending_queues[sender_id].append(expense_data)
                     
@@ -510,6 +519,14 @@ class ExpenseMonitor:
                     )
                     
                     if extracted_data and 'error' not in extracted_data:
+                        # Handle attachment upload to Supabase
+                        document_url = None
+                        if email.get('attachments'):
+                            primary_attachment = email['attachments'][0]
+                            logger.info(f"📤 Uploading email attachment {primary_attachment['filename']} to Supabase...")
+                            supabase = SupabaseClient()
+                            document_url = supabase.upload_receipt(primary_attachment['path'], primary_attachment['mime_type'])
+
                         # Add metadata
                         extracted_data['gmail_message_id'] = email['message_id']
                         extracted_data['email_subject'] = email['subject']
@@ -518,6 +535,7 @@ class ExpenseMonitor:
                         extracted_data['forwarded_from'] = email.get('forwarded_from') or email['sender']
                         extracted_data['source'] = 'forwarded_email' # Marker for indexing
                         extracted_data['user_id'] = "SHARED_POOL"
+                        extracted_data['document_url'] = document_url
                         
                         # AI extraction already handles local paths for analysis.
                         # We just save the data now without uploading to storage as requested.

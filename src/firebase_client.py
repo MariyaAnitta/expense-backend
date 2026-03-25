@@ -184,6 +184,7 @@ class FirebaseClient:
                 'user_id': 'SHARED_POOL',
                 'gmail_message_id': expense_data.get('gmail_message_id'),
                 'forwarded_from': expense_data.get('forwarded_from'),
+                'document_url': expense_data.get('document_url'),
                 
                 'created_at': firestore.SERVER_TIMESTAMP
             }

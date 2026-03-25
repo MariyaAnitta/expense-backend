@@ -1,12 +1,14 @@
 import os
 import requests
+import uuid
 from dotenv import load_dotenv
 from datetime import datetime
+from supabase import create_client, Client
 
 load_dotenv()
 
 class SupabaseClient:
-    """Handles all Supabase database operations using REST API"""
+    """Handles all Supabase database and storage operations"""
     
     def __init__(self):
         self.supabase_url = os.getenv('SUPABASE_URL')
@@ -15,10 +17,10 @@ class SupabaseClient:
         if not self.supabase_url or not self.supabase_key:
             raise Exception("❌ Supabase credentials not found in .env file")
         
-        # REST API endpoint
+        # REST API endpoint (legacy/database)
         self.api_url = f"{self.supabase_url}/rest/v1/expenses"
         
-        # Headers for authentication
+        # Headers for REST API
         self.headers = {
             'apikey': self.supabase_key,
             'Authorization': f'Bearer {self.supabase_key}',
@@ -26,7 +28,53 @@ class SupabaseClient:
             'Prefer': 'return=representation'
         }
         
-        print("✅ Connected to Supabase (REST API)")
+        # Official Supabase Client for Storage
+        self.client: Client = create_client(self.supabase_url, self.supabase_key)
+        
+        print("✅ Connected to Supabase (REST API & Storage)")
+
+    def upload_receipt(self, file_path, mime_type):
+        """
+        Upload file to Supabase Storage and return public URL
+        
+        Args:
+            file_path: Local path to file
+            mime_type: MIME type of the file
+            
+        Returns:
+            String - Public URL if success, None if failed
+        """
+        try:
+            if not os.path.exists(file_path):
+                print(f"❌ File not found: {file_path}")
+                return None
+                
+            file_name = os.path.basename(file_path)
+            # Ensure unique filename to prevent collisions
+            unique_name = f"{uuid.uuid4()}_{file_name}"
+            
+            bucket_name = "receipt-storage"
+            
+            with open(file_path, "rb") as f:
+                file_data = f.read()
+                
+            # Upload to Supabase Storage
+            res = self.client.storage.from_(bucket_name).upload(
+                path=unique_name,
+                file=file_data,
+                file_options={"content-type": mime_type}
+            )
+            
+            # Get public URL
+            public_url = self.client.storage.from_(bucket_name).get_public_url(unique_name)
+            
+            print(f"✅ Uploaded to Supabase: {public_url}")
+            return public_url
+            
+        except Exception as e:
+            print(f"❌ Error uploading to Supabase: {str(e)}")
+            return None
+
     
     def transaction_exists(self, gmail_message_id):
         """
